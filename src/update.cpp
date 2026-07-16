@@ -8,6 +8,7 @@
 #define _UNICODE
 #endif
 
+#include <initguid.h>
 #include <wuapi.h>
 #include <windows.h>
 

@@ -5,6 +5,8 @@
 #include "self_delete.hpp"
 #include "update.hpp"
 
+#include "../resources/resource.h"
+
 #include <commctrl.h>
 #include <shellapi.h>
 #include <wininet.h>
@@ -127,7 +129,7 @@ bool App::createUi() {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = L"SingleUpdateWindow";
-    wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(101));
+    wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APPICON));
     wc.hIconSm = wc.hIcon;
 
     if (!RegisterClassExW(&wc)) {

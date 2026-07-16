@@ -49,6 +49,7 @@ target_link_options(SingleUpdate PRIVATE
     -static-libgcc
     -static-libstdc++
     -mwindows
+    -municode
 )
 
 target_link_libraries(SingleUpdate PRIVATE

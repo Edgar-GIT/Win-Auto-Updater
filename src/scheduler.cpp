@@ -174,24 +174,13 @@ bool Scheduler::create() const {
 
     ComPtr<ILogonTrigger> logonTrigger;
     hr = trigger->QueryInterface(IID_ILogonTrigger, reinterpret_cast<void**>(logonTrigger.put()));
-    if (SUCCEEDED(hr) && logonTrigger) {
-        logonTrigger->put_Id(BStr(L"SingleUpdateLogon"));
-        logonTrigger->put_Delay(BStr(L"PT30S"));
-        logonTrigger->put_Enabled(VARIANT_TRUE);
+    if (FAILED(hr) || !logonTrigger) {
+        return false;
     }
 
-    ComPtr<ITrigger> bootTriggerBase;
-    hr = triggers->Create(TASK_TRIGGER_BOOT, bootTriggerBase.put());
-    if (SUCCEEDED(hr) && bootTriggerBase) {
-        ComPtr<IBootTrigger> bootTrigger;
-        if (SUCCEEDED(bootTriggerBase->QueryInterface(
-                IID_IBootTrigger, reinterpret_cast<void**>(bootTrigger.put()))) &&
-            bootTrigger) {
-            bootTrigger->put_Id(BStr(L"SingleUpdateBoot"));
-            bootTrigger->put_Delay(BStr(L"PT1M"));
-            bootTrigger->put_Enabled(VARIANT_TRUE);
-        }
-    }
+    logonTrigger->put_Id(BStr(L"SingleUpdateLogon"));
+    logonTrigger->put_Delay(BStr(L"PT30S"));
+    logonTrigger->put_Enabled(VARIANT_TRUE);
 
     ComPtr<IActionCollection> actions;
     hr = definition->get_Actions(actions.put());

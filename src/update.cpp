@@ -15,9 +15,7 @@
 
 namespace {
 
-constexpr const wchar_t* kSearchCriteria =
-    L"(IsInstalled=0 and IsHidden=0 and Type='Software') or "
-    L"(IsInstalled=0 and IsHidden=0 and Type='Driver')";
+constexpr const wchar_t* kSearchCriteria = L"IsInstalled=0 and IsHidden=0";
 
 long collectionCount(IUpdateCollection* collection) {
     if (!collection) {

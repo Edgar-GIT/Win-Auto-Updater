@@ -25,18 +25,28 @@ bool Restart::enablePrivilege() {
         return false;
     }
 
+    SetLastError(ERROR_SUCCESS);
     const BOOL ok = AdjustTokenPrivileges(token, FALSE, &privileges, 0, nullptr, nullptr);
     const DWORD err = GetLastError();
     CloseHandle(token);
-    return ok && err != ERROR_NOT_ALL_ASSIGNED;
+    return ok != FALSE && err == ERROR_SUCCESS;
 }
 
 bool Restart::now() {
-    if (!enablePrivilege()) {
-        return false;
+    enablePrivilege();
+
+    constexpr DWORD reason = SHTDN_REASON_MAJOR_OPERATINGSYSTEM |
+                             SHTDN_REASON_MINOR_INSTALLATION |
+                             SHTDN_REASON_FLAG_PLANNED;
+
+    wchar_t message[] = L"Single Update requires a restart to continue installing updates.";
+    if (InitiateSystemShutdownExW(nullptr, message, 5, TRUE, TRUE, reason)) {
+        return true;
     }
 
-    return ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG, SHTDN_REASON_MAJOR_OPERATINGSYSTEM |
-                                                            SHTDN_REASON_MINOR_INSTALLATION |
-                                                            SHTDN_REASON_FLAG_PLANNED) != FALSE;
+    if (ExitWindowsEx(EWX_REBOOT | EWX_FORCE | EWX_FORCEIFHUNG, reason)) {
+        return true;
+    }
+
+    return InitiateSystemShutdownW(nullptr, message, 0, TRUE, TRUE) != FALSE;
 }

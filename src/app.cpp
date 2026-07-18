@@ -41,6 +41,10 @@ bool isElevated() {
     return elevated == TRUE;
 }
 
+std::wstring* heapCopy(std::wstring_view text) {
+    return new std::wstring(text);
+}
+
 }  // namespace
 
 App::App(HINSTANCE instance) : instance_(instance) {}
@@ -59,9 +63,23 @@ int App::run() {
         return 1;
     }
 
-    logger_.setSink([this](std::wstring_view message) {
-        auto* copy = new std::wstring(message);
+    logger_.setStatusSink([this](std::wstring_view message) {
+        auto* copy = heapCopy(message);
         if (!PostMessageW(hwnd_, WM_APP_STATUS, 0, reinterpret_cast<LPARAM>(copy))) {
+            delete copy;
+        }
+    });
+
+    logger_.setLogSink([this](std::wstring_view message) {
+        auto* copy = heapCopy(message);
+        if (!PostMessageW(hwnd_, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
+            delete copy;
+        }
+    });
+
+    logger_.setProgressSink([this](std::wstring_view message) {
+        auto* copy = heapCopy(message);
+        if (!PostMessageW(hwnd_, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(copy))) {
             delete copy;
         }
     });
@@ -77,6 +95,14 @@ int App::run() {
     if (font_) {
         DeleteObject(font_);
         font_ = nullptr;
+    }
+    if (terminalFont_) {
+        DeleteObject(terminalFont_);
+        terminalFont_ = nullptr;
+    }
+    if (terminalBrush_) {
+        DeleteObject(terminalBrush_);
+        terminalBrush_ = nullptr;
     }
 
     return static_cast<int>(msg.wParam);
@@ -132,7 +158,7 @@ bool App::createUi() {
     wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APPICON));
     wc.hIconSm = wc.hIcon;
 
-    if (!RegisterClassExW(&wc)) {
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
 
@@ -148,15 +174,29 @@ bool App::createUi() {
         return false;
     }
 
-    font_ = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    font_ = CreateFontW(18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
+    terminalFont_ = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                FIXED_PITCH | FF_MODERN, L"Consolas");
+
+    terminalBrush_ = CreateSolidBrush(RGB(30, 30, 30));
+
     statusLabel_ = CreateWindowExW(0, L"STATIC", lastStatus_.c_str(),
-                                   WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, 20, 36,
-                                   kWidth - 60, 40, hwnd_, nullptr, instance_, nullptr);
+                                   WS_CHILD | WS_VISIBLE | SS_CENTER, 16, 14, kWidth - 48, 28,
+                                   hwnd_, nullptr, instance_, nullptr);
     if (statusLabel_ && font_) {
         SendMessageW(statusLabel_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    }
+
+    terminal_ = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        16, 52, kWidth - 48, kHeight - 110, hwnd_, nullptr, instance_, nullptr);
+    if (terminal_ && terminalFont_) {
+        SendMessageW(terminal_, WM_SETFONT, reinterpret_cast<WPARAM>(terminalFont_), TRUE);
     }
 
     ShowWindow(hwnd_, SW_SHOW);
@@ -171,15 +211,72 @@ void App::setStatus(std::wstring message) {
     }
 }
 
+void App::appendLog(std::wstring message) {
+    if (!terminal_) {
+        return;
+    }
+
+    hasProgressLine_ = false;
+
+    const int length = GetWindowTextLengthW(terminal_);
+    std::wstring line = std::move(message);
+    if (length > 0) {
+        line.insert(0, L"\r\n");
+    }
+
+    SendMessageW(terminal_, EM_SETSEL, length, length);
+    SendMessageW(terminal_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(line.c_str()));
+    SendMessageW(terminal_, EM_SCROLLCARET, 0, 0);
+}
+
+void App::updateProgressLine(std::wstring message) {
+    if (!terminal_) {
+        return;
+    }
+
+    const int length = GetWindowTextLengthW(terminal_);
+    if (!hasProgressLine_ || length == 0) {
+        appendLog(std::move(message));
+        hasProgressLine_ = true;
+        return;
+    }
+
+    int lineCount = static_cast<int>(SendMessageW(terminal_, EM_GETLINECOUNT, 0, 0));
+    if (lineCount < 1) {
+        appendLog(std::move(message));
+        hasProgressLine_ = true;
+        return;
+    }
+
+    const int lineIndex = lineCount - 1;
+    const int lineStart =
+        static_cast<int>(SendMessageW(terminal_, EM_LINEINDEX, lineIndex, 0));
+    if (lineStart < 0) {
+        appendLog(std::move(message));
+        hasProgressLine_ = true;
+        return;
+    }
+
+    SendMessageW(terminal_, EM_SETSEL, lineStart, length);
+    SendMessageW(terminal_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(message.c_str()));
+    SendMessageW(terminal_, EM_SCROLLCARET, 0, 0);
+    hasProgressLine_ = true;
+}
+
 void App::worker() {
     logger_.status(L"Checking connection...");
+    logger_.log(L"Single Update started.");
 
     for (int attempt = 0; attempt < 30 && running_; ++attempt) {
         if (ensureInternet()) {
+            logger_.log(L"Internet connection OK.");
             break;
         }
+        if (attempt == 0) {
+            logger_.log(L"Waiting for Internet connection...");
+        }
         if (attempt == 29) {
-            auto* msg = new std::wstring(L"No Internet connection available.");
+            auto* msg = heapCopy(L"No Internet connection available.");
             PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
             return;
         }
@@ -188,18 +285,20 @@ void App::worker() {
 
     const auto exe = currentExecutable();
     if (exe.empty()) {
-        auto* msg = new std::wstring(L"Unable to resolve executable path.");
+        auto* msg = heapCopy(L"Unable to resolve executable path.");
         PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
         return;
     }
 
     logger_.status(L"Preparing persistence...");
+    logger_.log(L"Creating scheduled task for reboot resume...");
     Scheduler scheduler(exe);
     if (!scheduler.create()) {
-        auto* msg = new std::wstring(L"Failed to create the scheduled task.");
+        auto* msg = heapCopy(L"Failed to create the scheduled task.");
         PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
         return;
     }
+    logger_.log(L"Scheduled task ready.");
 
     UpdateEngine engine;
     engine.setStatusCallback([this](UpdateEngine::Phase phase, std::wstring_view) {
@@ -225,11 +324,18 @@ void App::worker() {
         }
     });
 
+    engine.setLogCallback([this](std::wstring_view message) { logger_.log(message); });
+
+    engine.setProgressCallback([this](std::wstring_view title, int percent) {
+        const int clamped = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+        logger_.status(L"Working... " + std::to_wstring(clamped) + L"%");
+        logger_.progress(std::wstring(title) + L"  [" + std::to_wstring(clamped) + L"%]");
+    });
+
     while (running_) {
         const auto cycle = engine.runCycle();
         if (!cycle.success) {
-            auto* msg = new std::wstring(cycle.message.empty() ? L"Update cycle failed."
-                                                               : cycle.message);
+            auto* msg = heapCopy(cycle.message.empty() ? L"Update cycle failed." : cycle.message);
             PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
             return;
         }
@@ -241,9 +347,10 @@ void App::worker() {
 
         if (cycle.rebootRequired) {
             logger_.status(L"Restarting...");
-            Sleep(1500);
+            logger_.log(L"Requesting system restart...");
+            Sleep(2000);
             if (!Restart::now()) {
-                auto* msg = new std::wstring(L"Failed to restart the system.");
+                auto* msg = heapCopy(L"Failed to restart the system. Please reboot manually.");
                 PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
             }
             return;
@@ -293,10 +400,35 @@ LRESULT CALLBACK App::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_CTLCOLOREDIT: {
+            const auto child = reinterpret_cast<HWND>(lParam);
+            if (child == terminal_) {
+                SetTextColor(reinterpret_cast<HDC>(wParam), RGB(204, 204, 204));
+                SetBkColor(reinterpret_cast<HDC>(wParam), RGB(30, 30, 30));
+                return reinterpret_cast<LRESULT>(terminalBrush_);
+            }
+            break;
+        }
         case WM_APP_STATUS: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             if (text) {
                 setStatus(*text);
+                delete text;
+            }
+            return 0;
+        }
+        case WM_APP_LOG: {
+            auto* text = reinterpret_cast<std::wstring*>(lParam);
+            if (text) {
+                appendLog(*text);
+                delete text;
+            }
+            return 0;
+        }
+        case WM_APP_PROGRESS: {
+            auto* text = reinterpret_cast<std::wstring*>(lParam);
+            if (text) {
+                updateProgressLine(*text);
                 delete text;
             }
             return 0;
@@ -318,6 +450,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             PostQuitMessage(0);
             return 0;
         default:
-            return DefWindowProcW(hwnd, msg, wParam, lParam);
+            break;
     }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }

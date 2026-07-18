@@ -154,6 +154,7 @@ private:
     HANDLE event_;
 };
 
+
 class DownloadProgressChangedCallback final : public IDownloadProgressChangedCallback {
 public:
     using Fn = std::function<void(IDownloadJob*)>;

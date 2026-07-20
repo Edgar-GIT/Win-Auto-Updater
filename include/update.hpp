@@ -4,6 +4,9 @@
 #include <string>
 #include <string_view>
 
+struct IUpdate;
+struct IUpdateSession;
+
 class UpdateEngine {
 public:
     enum class Phase {
@@ -23,6 +26,7 @@ public:
         bool success = false;
         bool rebootRequired = false;
         bool upToDate = false;
+        bool hadFailures = false;
         std::wstring message;
     };
 
@@ -32,6 +36,12 @@ public:
     Result runCycle();
 
 private:
+    struct StepOutcome {
+        bool ok = false;
+        bool rebootRequired = false;
+        std::wstring detail;
+    };
+
     StatusCallback statusCallback_;
     LogCallback logCallback_;
     ProgressCallback progressCallback_;
@@ -39,4 +49,7 @@ private:
     void notify(Phase phase, std::wstring_view detail = L"") const;
     void log(std::wstring_view message) const;
     void progress(std::wstring_view title, int percent) const;
+
+    StepOutcome downloadOne(IUpdateSession* session, IUpdate* update, std::wstring_view title) const;
+    StepOutcome installOne(IUpdateSession* session, IUpdate* update, std::wstring_view title) const;
 };

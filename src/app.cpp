@@ -411,7 +411,20 @@ void App::finishSuccess() {
 void App::finishError(const std::wstring& message) {
     allowClose_ = true;
     setStatus(L"Error");
-    appendLog(message);
+    for (size_t pos = 0; pos < message.size();) {
+        const size_t next = message.find(L'\r', pos);
+        const std::wstring line = message.substr(pos, next == std::wstring::npos ? std::wstring::npos : next - pos);
+        if (!line.empty() && line != L"\n") {
+            appendLog(line);
+        }
+        if (next == std::wstring::npos) {
+            break;
+        }
+        pos = next + 1;
+        if (pos < message.size() && message[pos] == L'\n') {
+            ++pos;
+        }
+    }
     if (closeButton_) {
         ShowWindow(closeButton_, SW_SHOW);
         EnableWindow(closeButton_, TRUE);

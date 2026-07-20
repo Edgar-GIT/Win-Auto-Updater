@@ -15,7 +15,7 @@ add_executable(SingleUpdate WIN32
     src/scheduler.cpp
     src/update.cpp
     src/restart.cpp
-    src/self_delete.cpp
+    src/cleanup.cpp
     resources/app.rc
 )
 

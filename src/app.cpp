@@ -1,8 +1,8 @@
 #include "app.hpp"
 
+#include "cleanup.hpp"
 #include "restart.hpp"
 #include "scheduler.hpp"
-#include "self_delete.hpp"
 #include "update.hpp"
 
 #include "../resources/resource.h"
@@ -94,15 +94,12 @@ int App::run() {
 
     if (font_) {
         DeleteObject(font_);
-        font_ = nullptr;
     }
     if (terminalFont_) {
         DeleteObject(terminalFont_);
-        terminalFont_ = nullptr;
     }
     if (terminalBrush_) {
         DeleteObject(terminalBrush_);
-        terminalBrush_ = nullptr;
     }
 
     return static_cast<int>(msg.wParam);
@@ -194,9 +191,29 @@ bool App::createUi() {
     terminal_ = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-        16, 52, kWidth - 48, kHeight - 110, hwnd_, nullptr, instance_, nullptr);
+        16, 52, kWidth - 48, kHeight - 150, hwnd_, nullptr, instance_, nullptr);
     if (terminal_ && terminalFont_) {
         SendMessageW(terminal_, WM_SETFONT, reinterpret_cast<WPARAM>(terminalFont_), TRUE);
+    }
+
+    const int buttonY = kHeight - 88;
+    const int uninstallX = (kWidth - (kButtonWidth * 2 + 16)) / 2;
+
+    uninstallButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Uninstall", WS_CHILD | BS_PUSHBUTTON, uninstallX, buttonY, kButtonWidth,
+        kButtonHeight, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UNINSTALL)), instance_,
+        nullptr);
+
+    closeButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Close", WS_CHILD | BS_PUSHBUTTON, uninstallX + kButtonWidth + 16, buttonY,
+        kButtonWidth, kButtonHeight, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLOSE)),
+        instance_, nullptr);
+
+    if (uninstallButton_ && font_) {
+        SendMessageW(uninstallButton_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    }
+    if (closeButton_ && font_) {
+        SendMessageW(closeButton_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
 
     ShowWindow(hwnd_, SW_SHOW);
@@ -241,7 +258,7 @@ void App::updateProgressLine(std::wstring message) {
         return;
     }
 
-    int lineCount = static_cast<int>(SendMessageW(terminal_, EM_GETLINECOUNT, 0, 0));
+    const int lineCount = static_cast<int>(SendMessageW(terminal_, EM_GETLINECOUNT, 0, 0));
     if (lineCount < 1) {
         appendLog(std::move(message));
         hasProgressLine_ = true;
@@ -261,6 +278,38 @@ void App::updateProgressLine(std::wstring message) {
     SendMessageW(terminal_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(message.c_str()));
     SendMessageW(terminal_, EM_SCROLLCARET, 0, 0);
     hasProgressLine_ = true;
+}
+
+void App::showCompletionUi() {
+    finished_ = true;
+    allowClose_ = true;
+    setStatus(L"This computer is ready.");
+    appendLog(L"All available updates have been installed.");
+    appendLog(L"Use Uninstall to remove the scheduled task and temporary files.");
+
+    if (uninstallButton_) {
+        ShowWindow(uninstallButton_, SW_SHOW);
+        EnableWindow(uninstallButton_, TRUE);
+    }
+    if (closeButton_) {
+        ShowWindow(closeButton_, SW_SHOW);
+        EnableWindow(closeButton_, TRUE);
+    }
+}
+
+void App::performUninstall() {
+    const auto exe = currentExecutable();
+    Scheduler scheduler(exe);
+    const bool taskRemoved = scheduler.remove();
+    Cleanup::removeTempFiles();
+
+    appendLog(taskRemoved ? L"Scheduled task removed." : L"Scheduled task was not found.");
+    appendLog(L"Temporary files removed.");
+
+    if (uninstallButton_) {
+        EnableWindow(uninstallButton_, FALSE);
+        SetWindowTextW(uninstallButton_, L"Uninstalled");
+    }
 }
 
 void App::worker() {
@@ -346,13 +395,7 @@ void App::worker() {
         }
 
         if (cycle.rebootRequired) {
-            logger_.status(L"Restarting...");
-            logger_.log(L"Requesting system restart...");
-            Sleep(2000);
-            if (!Restart::now()) {
-                auto* msg = heapCopy(L"Failed to restart the system. Please reboot manually.");
-                PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
-            }
+            PostMessageW(hwnd_, WM_APP_REBOOT, 0, 0);
             return;
         }
 
@@ -362,23 +405,38 @@ void App::worker() {
 }
 
 void App::finishSuccess() {
-    MessageBoxW(hwnd_, L"This computer is ready.\nAll available updates have been installed.",
-                L"Single Update", MB_OK | MB_ICONINFORMATION);
-
-    const auto exe = currentExecutable();
-    Scheduler scheduler(exe);
-    scheduler.remove();
-    SelfDelete::cleanTempFiles();
-    SelfDelete::schedule(exe);
-
-    running_ = false;
-    DestroyWindow(hwnd_);
+    showCompletionUi();
 }
 
 void App::finishError(const std::wstring& message) {
-    MessageBoxW(hwnd_, message.c_str(), L"Single Update", MB_OK | MB_ICONERROR);
-    running_ = false;
-    DestroyWindow(hwnd_);
+    allowClose_ = true;
+    setStatus(L"Error");
+    appendLog(message);
+    if (closeButton_) {
+        ShowWindow(closeButton_, SW_SHOW);
+        EnableWindow(closeButton_, TRUE);
+    }
+}
+
+void App::requestReboot() {
+    logger_.status(L"Restarting...");
+    logger_.log(L"Requesting system restart in 15 seconds...");
+    Sleep(1500);
+
+    if (Restart::now()) {
+        logger_.log(L"Restart command sent.");
+        allowClose_ = true;
+        return;
+    }
+
+    allowClose_ = true;
+    setStatus(L"Restart required");
+    appendLog(L"Automatic restart failed. Please restart Windows manually.");
+    appendLog(L"The scheduled task will resume Single Update after logon.");
+    if (closeButton_) {
+        ShowWindow(closeButton_, SW_SHOW);
+        EnableWindow(closeButton_, TRUE);
+    }
 }
 
 LRESULT CALLBACK App::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -409,6 +467,22 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             break;
         }
+        case WM_COMMAND: {
+            switch (LOWORD(wParam)) {
+                case IDC_UNINSTALL:
+                    if (finished_) {
+                        performUninstall();
+                    }
+                    return 0;
+                case IDC_CLOSE:
+                    if (allowClose_) {
+                        running_ = false;
+                        DestroyWindow(hwnd_);
+                    }
+                    return 0;
+            }
+            break;
+        }
         case WM_APP_STATUS: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             if (text) {
@@ -436,6 +510,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_APP_DONE:
             finishSuccess();
             return 0;
+        case WM_APP_REBOOT:
+            requestReboot();
+            return 0;
         case WM_APP_ERROR: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             const std::wstring message = text ? *text : L"Unexpected error.";
@@ -444,6 +521,10 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_CLOSE:
+            if (allowClose_) {
+                running_ = false;
+                DestroyWindow(hwnd_);
+            }
             return 0;
         case WM_DESTROY:
             running_ = false;

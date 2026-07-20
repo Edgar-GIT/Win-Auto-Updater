@@ -12,44 +12,11 @@
 #include <wuapi.h>
 #include <windows.h>
 
-#include <atomic>
-#include <functional>
 #include <string>
 
 namespace {
 
 constexpr const wchar_t* kSearchCriteria = L"IsInstalled=0 and IsHidden=0";
-
-DEFINE_GUID(IID_IDownloadProgressChangedCallback, 0x8c3f1cdd, 0x6173, 0x4591, 0xae, 0xbd, 0xa5,
-            0x6a, 0x53, 0xca, 0x77, 0xc1);
-DEFINE_GUID(IID_IDownloadCompletedCallback, 0x77254866, 0x9f5b, 0x4c8e, 0xb9, 0xe2, 0xc7, 0x7a,
-            0x85, 0x30, 0xd6, 0x4b);
-DEFINE_GUID(IID_IInstallationProgressChangedCallback, 0xe01402d5, 0xf8da, 0x43ba, 0xa0, 0x12, 0x38,
-            0x89, 0x4b, 0xd0, 0x48, 0xf1);
-DEFINE_GUID(IID_IInstallationCompletedCallback, 0x45f4f6f3, 0xd602, 0x4f98, 0x9a, 0x8a, 0x3e, 0xfa,
-            0x15, 0x2a, 0xd2, 0xd3);
-
-MIDL_INTERFACE("8c3f1cdd-6173-4591-aebd-a56a53ca77c1")
-IDownloadProgressChangedCallback : public IUnknown {
-    virtual HRESULT STDMETHODCALLTYPE Invoke(IDownloadJob* downloadJob, IUnknown* callbackArgs) = 0;
-};
-
-MIDL_INTERFACE("77254866-9f5b-4c8e-b9e2-c77a8530d64b")
-IDownloadCompletedCallback : public IUnknown {
-    virtual HRESULT STDMETHODCALLTYPE Invoke(IDownloadJob* downloadJob, IUnknown* callbackArgs) = 0;
-};
-
-MIDL_INTERFACE("e01402d5-f8da-43ba-a012-38894bd048f1")
-IInstallationProgressChangedCallback : public IUnknown {
-    virtual HRESULT STDMETHODCALLTYPE Invoke(IInstallationJob* installationJob,
-                                             IUnknown* callbackArgs) = 0;
-};
-
-MIDL_INTERFACE("45f4f6f3-d602-4f98-9a8a-3efa152ad2d3")
-IInstallationCompletedCallback : public IUnknown {
-    virtual HRESULT STDMETHODCALLTYPE Invoke(IInstallationJob* installationJob,
-                                             IUnknown* callbackArgs) = 0;
-};
 
 long collectionCount(IUpdateCollection* collection) {
     if (!collection) {
@@ -79,6 +46,10 @@ std::wstring updateTitle(IUpdateCollection* collection, LONG index) {
     return std::wstring(title.get());
 }
 
+std::wstring hresultMessage(HRESULT hr) {
+    return L"HRESULT 0x" + std::to_wstring(static_cast<unsigned long>(hr));
+}
+
 bool acceptEulas(IUpdateCollection* collection) {
     const long count = collectionCount(collection);
     for (long i = 0; i < count; ++i) {
@@ -97,6 +68,48 @@ bool acceptEulas(IUpdateCollection* collection) {
     return true;
 }
 
+bool registryKeyExists(HKEY root, const wchar_t* subKey) {
+    HKEY key = nullptr;
+    const LONG result = RegOpenKeyExW(root, subKey, 0, KEY_READ, &key);
+    if (result == ERROR_SUCCESS) {
+        RegCloseKey(key);
+        return true;
+    }
+    return false;
+}
+
+bool registryRebootPending() {
+    static const wchar_t* keys[] = {
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired",
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending",
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\PostRebootReporting",
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\UacRebootRequired",
+    };
+
+    for (const wchar_t* key : keys) {
+        if (registryKeyExists(HKEY_LOCAL_MACHINE, key)) {
+            return true;
+        }
+    }
+
+    HKEY session = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, KEY_READ,
+                      &session) == ERROR_SUCCESS) {
+        DWORD type = 0;
+        DWORD size = 0;
+        const LONG pending =
+            RegQueryValueExW(session, L"PendingFileRenameOperations", nullptr, &type, nullptr,
+                            &size);
+        RegCloseKey(session);
+        if (pending == ERROR_SUCCESS && size > 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool resultNeedsReboot(IInstallationResult* result) {
     if (!result) {
         return false;
@@ -109,6 +122,10 @@ bool resultNeedsReboot(IInstallationResult* result) {
 }
 
 bool systemNeedsReboot() {
+    if (registryRebootPending()) {
+        return true;
+    }
+
     ComPtr<ISystemInformation> info;
     HRESULT hr = CoCreateInstance(CLSID_SystemInformation, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_ISystemInformation, reinterpret_cast<void**>(info.put()));
@@ -127,232 +144,42 @@ bool operationOk(OperationResultCode code) {
     return code == orcSucceeded || code == orcSucceededWithErrors;
 }
 
-class CompletionSignal {
-public:
-    CompletionSignal() : event_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+bool ensureWindowsUpdateService() {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager) {
+        return false;
+    }
 
-    ~CompletionSignal() {
-        if (event_) {
-            CloseHandle(event_);
+    SC_HANDLE service = OpenServiceW(manager, L"wuauserv", SERVICE_START | SERVICE_QUERY_STATUS);
+    if (!service) {
+        CloseServiceHandle(manager);
+        return false;
+    }
+
+    SERVICE_STATUS status{};
+    bool running = false;
+    if (QueryServiceStatus(service, &status)) {
+        running = status.dwCurrentState == SERVICE_RUNNING;
+        if (!running && status.dwCurrentState == SERVICE_STOPPED) {
+            running = StartServiceW(service, 0, nullptr) != FALSE;
+            if (running) {
+                for (int i = 0; i < 30; ++i) {
+                    Sleep(1000);
+                    if (QueryServiceStatus(service, &status) &&
+                        status.dwCurrentState == SERVICE_RUNNING) {
+                        running = true;
+                        break;
+                    }
+                }
+            }
+        } else if (status.dwCurrentState == SERVICE_RUNNING) {
+            running = true;
         }
     }
 
-    CompletionSignal(const CompletionSignal&) = delete;
-    CompletionSignal& operator=(const CompletionSignal&) = delete;
-
-    void signal() {
-        if (event_) {
-            SetEvent(event_);
-        }
-    }
-
-    bool wait(DWORD timeoutMs) const {
-        return event_ && WaitForSingleObject(event_, timeoutMs) == WAIT_OBJECT_0;
-    }
-
-private:
-    HANDLE event_;
-};
-
-
-class DownloadProgressChangedCallback final : public IDownloadProgressChangedCallback {
-public:
-    using Fn = std::function<void(IDownloadJob*)>;
-
-    explicit DownloadProgressChangedCallback(Fn fn) : fn_(std::move(fn)) {}
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-        if (!ppv) {
-            return E_POINTER;
-        }
-        if (riid == IID_IUnknown || riid == IID_IDownloadProgressChangedCallback) {
-            *ppv = static_cast<IDownloadProgressChangedCallback*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++ref_;
-    }
-
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG value = --ref_;
-        if (value == 0) {
-            delete this;
-        }
-        return value;
-    }
-
-    HRESULT STDMETHODCALLTYPE Invoke(IDownloadJob* job, IUnknown*) override {
-        if (fn_) {
-            fn_(job);
-        }
-        return S_OK;
-    }
-
-private:
-    Fn fn_;
-    std::atomic<ULONG> ref_{1};
-};
-
-class DownloadCompletedCallback final : public IDownloadCompletedCallback {
-public:
-    explicit DownloadCompletedCallback(CompletionSignal& signal) : signal_(signal) {}
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-        if (!ppv) {
-            return E_POINTER;
-        }
-        if (riid == IID_IUnknown || riid == IID_IDownloadCompletedCallback) {
-            *ppv = static_cast<IDownloadCompletedCallback*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++ref_;
-    }
-
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG value = --ref_;
-        if (value == 0) {
-            delete this;
-        }
-        return value;
-    }
-
-    HRESULT STDMETHODCALLTYPE Invoke(IDownloadJob*, IUnknown*) override {
-        signal_.signal();
-        return S_OK;
-    }
-
-private:
-    CompletionSignal& signal_;
-    std::atomic<ULONG> ref_{1};
-};
-
-class InstallationProgressChangedCallback final : public IInstallationProgressChangedCallback {
-public:
-    using Fn = std::function<void(IInstallationJob*)>;
-
-    explicit InstallationProgressChangedCallback(Fn fn) : fn_(std::move(fn)) {}
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-        if (!ppv) {
-            return E_POINTER;
-        }
-        if (riid == IID_IUnknown || riid == IID_IInstallationProgressChangedCallback) {
-            *ppv = static_cast<IInstallationProgressChangedCallback*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++ref_;
-    }
-
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG value = --ref_;
-        if (value == 0) {
-            delete this;
-        }
-        return value;
-    }
-
-    HRESULT STDMETHODCALLTYPE Invoke(IInstallationJob* job, IUnknown*) override {
-        if (fn_) {
-            fn_(job);
-        }
-        return S_OK;
-    }
-
-private:
-    Fn fn_;
-    std::atomic<ULONG> ref_{1};
-};
-
-class InstallationCompletedCallback final : public IInstallationCompletedCallback {
-public:
-    explicit InstallationCompletedCallback(CompletionSignal& signal) : signal_(signal) {}
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-        if (!ppv) {
-            return E_POINTER;
-        }
-        if (riid == IID_IUnknown || riid == IID_IInstallationCompletedCallback) {
-            *ppv = static_cast<IInstallationCompletedCallback*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++ref_;
-    }
-
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG value = --ref_;
-        if (value == 0) {
-            delete this;
-        }
-        return value;
-    }
-
-    HRESULT STDMETHODCALLTYPE Invoke(IInstallationJob*, IUnknown*) override {
-        signal_.signal();
-        return S_OK;
-    }
-
-private:
-    CompletionSignal& signal_;
-    std::atomic<ULONG> ref_{1};
-};
-
-void reportDownloadProgress(IDownloadJob* job, IUpdateCollection* updates,
-                            const UpdateEngine::ProgressCallback& callback) {
-    if (!job || !callback) {
-        return;
-    }
-
-    ComPtr<IDownloadProgress> progressObj;
-    if (FAILED(job->GetProgress(progressObj.put())) || !progressObj) {
-        return;
-    }
-
-    LONG index = 0;
-    LONG percent = 0;
-    progressObj->get_CurrentUpdateIndex(&index);
-    progressObj->get_PercentComplete(&percent);
-    callback(updateTitle(updates, index), static_cast<int>(percent));
-}
-
-void reportInstallProgress(IInstallationJob* job, IUpdateCollection* updates,
-                           const UpdateEngine::ProgressCallback& callback) {
-    if (!job || !callback) {
-        return;
-    }
-
-    ComPtr<IInstallationProgress> progressObj;
-    if (FAILED(job->GetProgress(progressObj.put())) || !progressObj) {
-        return;
-    }
-
-    LONG index = 0;
-    LONG percent = 0;
-    progressObj->get_CurrentUpdateIndex(&index);
-    progressObj->get_PercentComplete(&percent);
-    callback(updateTitle(updates, index), static_cast<int>(percent));
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    return running;
 }
 
 }  // namespace
@@ -390,9 +217,14 @@ void UpdateEngine::progress(std::wstring_view title, int percent) const {
 UpdateEngine::Result UpdateEngine::runCycle() {
     Result result;
 
-    ComInitializer com;
+    ComInitializer com(COINIT_APARTMENTTHREADED);
     if (!com.ok()) {
         result.message = L"Failed to initialize COM.";
+        return result;
+    }
+
+    if (!ensureWindowsUpdateService()) {
+        result.message = L"Windows Update service is not running.";
         return result;
     }
 
@@ -400,7 +232,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     HRESULT hr = CoCreateInstance(CLSID_UpdateSession, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_IUpdateSession, reinterpret_cast<void**>(session.put()));
     if (FAILED(hr) || !session) {
-        result.message = L"Failed to create update session.";
+        result.message = L"Failed to create update session. " + hresultMessage(hr);
         return result;
     }
 
@@ -414,7 +246,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     }
 
     searcher->put_Online(VARIANT_TRUE);
-    searcher->put_ServerSelection(ssDefault);
+    searcher->put_ServerSelection(ssWindowsUpdate);
     searcher->put_IncludePotentiallySupersededUpdates(VARIANT_FALSE);
 
     notify(Phase::Searching, L"Searching updates...");
@@ -423,7 +255,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     ComPtr<ISearchResult> searchResult;
     hr = searcher->Search(BStr(kSearchCriteria), searchResult.put());
     if (FAILED(hr) || !searchResult) {
-        result.message = L"Update search failed.";
+        result.message = L"Update search failed. " + hresultMessage(hr);
         return result;
     }
 
@@ -445,7 +277,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     if (count == 0) {
         if (systemNeedsReboot()) {
             notify(Phase::RebootRequired, L"Restarting...");
-            log(L"A reboot is required to finish pending updates.");
+            log(L"Windows is waiting for a restart to finish pending updates.");
             result.success = true;
             result.rebootRequired = true;
             return result;
@@ -479,40 +311,15 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     }
 
     downloader->put_Updates(updates.get());
+    downloader->put_Priority(dpHigh);
     downloader->put_IsForced(VARIANT_TRUE);
 
-    CompletionSignal downloadDone;
-    auto* downloadProgressCb = new DownloadProgressChangedCallback(
-        [this, collection = updates.get()](IDownloadJob* job) {
-            reportDownloadProgress(job, collection, progressCallback_);
-        });
-    auto* downloadCompletedCb = new DownloadCompletedCallback(downloadDone);
-
-    VARIANT state{};
-    VariantInit(&state);
-
-    ComPtr<IDownloadJob> downloadJob;
-    hr = downloader->BeginDownload(downloadProgressCb, downloadCompletedCb, state,
-                                   downloadJob.put());
-    downloadProgressCb->Release();
-    downloadCompletedCb->Release();
-
-    if (FAILED(hr) || !downloadJob) {
-        result.message = L"Failed to start update download.";
-        return result;
-    }
-
-    while (!downloadDone.wait(400)) {
-        reportDownloadProgress(downloadJob.get(), updates.get(), progressCallback_);
-    }
-    reportDownloadProgress(downloadJob.get(), updates.get(), progressCallback_);
+    progress(updateTitle(updates.get(), 0), 0);
 
     ComPtr<IDownloadResult> downloadResult;
-    hr = downloader->EndDownload(downloadJob.get(), downloadResult.put());
-    downloadJob->CleanUp();
-
+    hr = downloader->Download(downloadResult.put());
     if (FAILED(hr) || !downloadResult) {
-        result.message = L"Update download failed.";
+        result.message = L"Update download failed. " + hresultMessage(hr);
         return result;
     }
 
@@ -523,9 +330,11 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         return result;
     }
 
+    progress(updateTitle(updates.get(), count - 1), 100);
     log(L"Download complete.");
+
     notify(Phase::Installing, L"Installing...");
-    log(L"Installing updates...");
+    log(L"Installing updates (this may take several minutes)...");
 
     ComPtr<IUpdateInstaller> installer;
     hr = session->CreateUpdateInstaller(installer.put());
@@ -542,40 +351,22 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     if (SUCCEEDED(installer->get_RebootRequiredBeforeInstallation(&rebootBefore)) &&
         rebootBefore == VARIANT_TRUE) {
         notify(Phase::RebootRequired, L"Restarting...");
-        log(L"Reboot required before installation can continue.");
+        log(L"Windows requires a restart before installation can continue.");
         result.success = true;
         result.rebootRequired = true;
         return result;
     }
 
-    CompletionSignal installDone;
-    auto* installProgressCb = new InstallationProgressChangedCallback(
-        [this, collection = updates.get()](IInstallationJob* job) {
-            reportInstallProgress(job, collection, progressCallback_);
-        });
-    auto* installCompletedCb = new InstallationCompletedCallback(installDone);
-
-    ComPtr<IInstallationJob> installJob;
-    hr = installer->BeginInstall(installProgressCb, installCompletedCb, state, installJob.put());
-    installProgressCb->Release();
-    installCompletedCb->Release();
-
-    if (FAILED(hr) || !installJob) {
-        result.message = L"Failed to start update installation.";
-        return result;
+    for (long i = 0; i < count; ++i) {
+        const int percent = count <= 1 ? 50 : static_cast<int>((i * 100) / count);
+        progress(updateTitle(updates.get(), i), percent);
+        log(L"Installing: " + updateTitle(updates.get(), i));
     }
-
-    while (!installDone.wait(400)) {
-        reportInstallProgress(installJob.get(), updates.get(), progressCallback_);
-    }
-    reportInstallProgress(installJob.get(), updates.get(), progressCallback_);
 
     ComPtr<IInstallationResult> installResult;
-    hr = installer->EndInstall(installJob.get(), installResult.put());
-    installJob->CleanUp();
-
+    hr = installer->Install(installResult.put());
     if (FAILED(hr) || !installResult) {
-        result.message = L"Update installation failed.";
+        result.message = L"Update installation failed. " + hresultMessage(hr);
         return result;
     }
 
@@ -586,11 +377,12 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         return result;
     }
 
+    progress(updateTitle(updates.get(), count - 1), 100);
     log(L"Installation complete.");
 
     if (resultNeedsReboot(installResult.get()) || systemNeedsReboot()) {
         notify(Phase::RebootRequired, L"Restarting...");
-        log(L"Reboot required. Restarting Windows...");
+        log(L"Restart required. Windows will reboot in 15 seconds...");
         result.success = true;
         result.rebootRequired = true;
         return result;

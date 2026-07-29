@@ -16,6 +16,7 @@ add_executable(SingleUpdate WIN32
     src/update.cpp
     src/restart.cpp
     src/cleanup.cpp
+    src/state.cpp
     resources/app.rc
 )
 

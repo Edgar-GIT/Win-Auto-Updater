@@ -120,73 +120,12 @@ bool isDefenderRelatedUpdate(std::wstring_view title) {
     return false;
 }
 
-bool registryKeyExists(HKEY root, const wchar_t* subKey) {
-    HKEY key = nullptr;
-    const LONG result = RegOpenKeyExW(root, subKey, 0, KEY_READ, &key);
-    if (result == ERROR_SUCCESS) {
-        RegCloseKey(key);
-        return true;
-    }
-    return false;
-}
-
-bool registryRebootPending() {
-    static const wchar_t* keys[] = {
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired",
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending",
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\PostRebootReporting",
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\UacRebootRequired",
-    };
-
-    for (const wchar_t* key : keys) {
-        if (registryKeyExists(HKEY_LOCAL_MACHINE, key)) {
-            return true;
-        }
-    }
-
-    HKEY session = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                      L"SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, KEY_READ,
-                      &session) == ERROR_SUCCESS) {
-        DWORD type = 0;
-        DWORD size = 0;
-        const LONG pending =
-            RegQueryValueExW(session, L"PendingFileRenameOperations", nullptr, &type, nullptr,
-                            &size);
-        RegCloseKey(session);
-        if (pending == ERROR_SUCCESS && size > 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 bool resultNeedsReboot(IInstallationResult* result) {
     if (!result) {
         return false;
     }
     VARIANT_BOOL required = VARIANT_FALSE;
     if (FAILED(result->get_RebootRequired(&required))) {
-        return false;
-    }
-    return required == VARIANT_TRUE;
-}
-
-bool systemNeedsReboot() {
-    if (registryRebootPending()) {
-        return true;
-    }
-
-    ComPtr<ISystemInformation> info;
-    HRESULT hr = CoCreateInstance(CLSID_SystemInformation, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_ISystemInformation, reinterpret_cast<void**>(info.put()));
-    if (FAILED(hr) || !info) {
-        return false;
-    }
-
-    VARIANT_BOOL required = VARIANT_FALSE;
-    if (FAILED(info->get_RebootRequired(&required))) {
         return false;
     }
     return required == VARIANT_TRUE;
@@ -483,14 +422,6 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
     const long count = collectionCount(updates.get());
     if (count == 0) {
-        if (systemNeedsReboot()) {
-            notify(Phase::RebootRequired, L"Restarting...");
-            log(L"Windows is waiting for a restart to finish pending updates.");
-            result.success = true;
-            result.rebootRequired = true;
-            return result;
-        }
-
         notify(Phase::UpToDate, L"System is up to date.");
         log(L"No updates found.");
         result.success = true;
@@ -562,7 +493,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     log(L"Summary: " + std::to_wstring(installed) + L" installed, " + std::to_wstring(failed) +
         L" failed, " + std::to_wstring(skipped) + L" skipped.");
 
-    if (rebootRequired || systemNeedsReboot()) {
+    if (rebootRequired) {
         notify(Phase::RebootRequired, L"Restarting...");
         log(L"Restart required. Windows will reboot in 15 seconds...");
         result.success = true;

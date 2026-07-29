@@ -3,6 +3,7 @@
 #include "cleanup.hpp"
 #include "restart.hpp"
 #include "scheduler.hpp"
+#include "state.hpp"
 #include "update.hpp"
 
 #include "../resources/resource.h"
@@ -339,15 +340,28 @@ void App::worker() {
         return;
     }
 
-    logger_.status(L"Preparing persistence...");
-    logger_.log(L"Creating scheduled task for reboot resume...");
-    Scheduler scheduler(exe);
-    if (!scheduler.create()) {
-        auto* msg = heapCopy(L"Failed to create the scheduled task.");
-        PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
-        return;
+    StateManager stateManager;
+    const auto savedState = stateManager.load();
+    const bool isContinuation = (savedState.phase == L"waiting_reboot");
+
+    if (isContinuation) {
+        logger_.log(L"Resuming after reboot (reboot #" +
+                    std::to_wstring(savedState.rebootCount) + L").");
+    } else {
+        logger_.log(L"Fresh start.");
     }
-    logger_.log(L"Scheduled task ready.");
+
+    if (!isContinuation) {
+        logger_.status(L"Preparing persistence...");
+        logger_.log(L"Creating scheduled task for reboot resume...");
+        Scheduler scheduler(exe);
+        if (!scheduler.create()) {
+            auto* msg = heapCopy(L"Failed to create the scheduled task.");
+            PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
+            return;
+        }
+        logger_.log(L"Scheduled task ready.");
+    }
 
     UpdateEngine engine;
     engine.setStatusCallback([this](UpdateEngine::Phase phase, std::wstring_view) {
@@ -390,11 +404,19 @@ void App::worker() {
         }
 
         if (cycle.upToDate) {
+            logger_.log(L"System is up to date. Cleaning up...");
+            Scheduler scheduler(exe);
+            scheduler.remove();
+            stateManager.remove();
             PostMessageW(hwnd_, WM_APP_DONE, 0, 0);
             return;
         }
 
         if (cycle.rebootRequired) {
+            StateManager::State state;
+            state.phase = L"waiting_reboot";
+            state.rebootCount = savedState.rebootCount + 1;
+            stateManager.save(state);
             PostMessageW(hwnd_, WM_APP_REBOOT, 0, 0);
             return;
         }
@@ -405,7 +427,20 @@ void App::worker() {
 }
 
 void App::finishSuccess() {
-    showCompletionUi();
+    finished_ = true;
+    allowClose_ = true;
+    setStatus(L"This computer is ready.");
+    appendLog(L"All available updates have been installed.");
+    appendLog(L"The scheduled task has been removed automatically.");
+
+    if (closeButton_) {
+        ShowWindow(closeButton_, SW_SHOW);
+        EnableWindow(closeButton_, TRUE);
+    }
+    if (uninstallButton_) {
+        EnableWindow(uninstallButton_, FALSE);
+        SetWindowTextW(uninstallButton_, L"Uninstalled");
+    }
 }
 
 void App::finishError(const std::wstring& message) {

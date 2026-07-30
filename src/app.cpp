@@ -375,6 +375,9 @@ void App::worker() {
     const auto savedState = stateManager.load();
     const bool isContinuation = (savedState.phase == L"waiting_reboot");
 
+    runNumber_ = savedState.rebootCount + 1;
+    executionType_ = isContinuation ? L"Resume after reboot" : L"Fresh start";
+
     if (isContinuation) {
         logger_.log(L"Resuming after reboot (reboot #" +
                     std::to_wstring(savedState.rebootCount) + L").");
@@ -434,7 +437,14 @@ void App::worker() {
             return;
         }
 
+        totalUpdatesFound_ += cycle.updatesFound;
+        totalUpdatesInstalled_ += cycle.updatesInstalled;
+        totalUpdatesFailed_ += cycle.updatesFailed;
+        finalVerificationDone_ = cycle.finalVerificationDone || finalVerificationDone_;
+
         if (cycle.upToDate) {
+            cleanupDone_ = true;
+            logSummary(L"Success");
             logger_.log(L"System is up to date. Cleaning up...");
             Scheduler scheduler(exe);
             scheduler.remove();
@@ -444,9 +454,26 @@ void App::worker() {
         }
 
         if (cycle.rebootRequired) {
+            hadPendingRestart_ = cycle.pendingRestart;
+            const int newRebootCount = savedState.rebootCount + 1;
+            if (newRebootCount > kMaxRebootCount) {
+                logger_.log(L"Max reboot count (" + std::to_wstring(kMaxRebootCount) +
+                            L") reached. Aborting.");
+                Scheduler scheduler(exe);
+                scheduler.remove();
+                stateManager.remove();
+                cleanupDone_ = true;
+                logSummary(L"Error");
+                auto* msg = heapCopy(
+                    L"The update process could not be completed automatically.\r\n\r\n"
+                    L"Windows Update appears to be stuck in a reboot cycle.\r\n\r\n"
+                    L"Please complete the remaining updates manually.");
+                PostMessageW(hwnd_, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(msg));
+                return;
+            }
             StateManager::State state;
             state.phase = L"waiting_reboot";
-            state.rebootCount = savedState.rebootCount + 1;
+            state.rebootCount = newRebootCount;
             stateManager.save(state);
             PostMessageW(hwnd_, WM_APP_REBOOT, 0, 0);
             return;
@@ -458,6 +485,7 @@ void App::worker() {
 }
 
 void App::finishSuccess() {
+    logSummary(L"Success");
     finished_ = true;
     allowClose_ = true;
     setStatus(L"This computer is ready.");
@@ -496,6 +524,31 @@ void App::finishError(const std::wstring& message) {
         ShowWindow(closeButton_, SW_SHOW);
         EnableWindow(closeButton_, TRUE);
     }
+    if (uninstallButton_) {
+        ShowWindow(uninstallButton_, SW_SHOW);
+        EnableWindow(uninstallButton_, TRUE);
+        SetWindowTextW(uninstallButton_, L"Uninstall");
+    }
+}
+
+void App::logSummary(const std::wstring& result) {
+    const auto add = [this](const std::wstring& line) {
+        logger_.log(line);
+        appendLog(line);
+    };
+    add(L"");
+    add(L"===== Single Update =====");
+    add(L"");
+    add(L"Run number: " + std::to_wstring(runNumber_));
+    add(L"Execution type: " + executionType_);
+    add(L"Updates found: " + std::to_wstring(totalUpdatesFound_));
+    add(L"Updates installed: " + std::to_wstring(totalUpdatesInstalled_));
+    add(L"Updates failed: " + std::to_wstring(totalUpdatesFailed_));
+    add(L"Pending restart: " + std::wstring(hadPendingRestart_ ? L"Yes" : L"No"));
+    add(L"Final verification: " + std::wstring(finalVerificationDone_ ? L"Passed" : L"Skipped"));
+    add(L"Cleanup: " + std::wstring(cleanupDone_ ? L"Completed" : L"Skipped"));
+    add(L"Result: " + result);
+    add(L"");
 }
 
 void App::requestReboot() {

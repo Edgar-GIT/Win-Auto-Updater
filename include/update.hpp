@@ -31,6 +31,11 @@ public:
         bool pendingRestart = false;
         bool upToDate = false;
         bool hadFailures = false;
+        int updatesFound = 0;
+        int updatesInstalled = 0;
+        int updatesFailed = 0;
+        int updatesSkipped = 0;
+        bool finalVerificationDone = false;
         std::wstring message;
     };
 

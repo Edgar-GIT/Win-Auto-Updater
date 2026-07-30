@@ -583,6 +583,8 @@ UpdateEngine::Result UpdateEngine::runCycle() {
     }
 
     const long count = collectionCount(updates.get());
+    result.updatesFound = static_cast<int>(count);
+
     if (count == 0) {
         log(L"No pending updates found. Checking for installed updates needing restart...");
         if (hasPendingRestart(session.get())) {
@@ -593,12 +595,16 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             result.rebootRequired = true;
             return result;
         }
-        notify(Phase::CheckingAgain, L"Final verification...");
-        log(L"No updates found. Waiting for catalog stabilization...");
-        Sleep(8000);
 
-        log(L"Performing final update search...");
-        {
+        notify(Phase::CheckingAgain, L"Final verification...");
+        log(L"No updates found. Polling for catalog stabilization...");
+
+        constexpr int kMaxPollSeconds = 10;
+        constexpr int kPollIntervalMs = 1000;
+
+        for (int poll = 0; poll < kMaxPollSeconds; ++poll) {
+            Sleep(kPollIntervalMs);
+
             ComPtr<ISearchResult> finalResult;
             hr = searcher->Search(BStr(kSearchCriteria), finalResult.put());
             if (SUCCEEDED(hr) && finalResult) {
@@ -606,7 +612,9 @@ UpdateEngine::Result UpdateEngine::runCycle() {
                 hr = finalResult->get_Updates(finalUpdates.put());
                 if (SUCCEEDED(hr) && finalUpdates) {
                     const long finalCount = collectionCount(finalUpdates.get());
-                    log(L"  Final search found " + std::to_wstring(finalCount) + L" update(s).");
+                    log(L"  Poll " + std::to_wstring(poll + 1) + L"/" +
+                        std::to_wstring(kMaxPollSeconds) + L": " +
+                        std::to_wstring(finalCount) + L" update(s).");
                     if (finalCount > 0) {
                         log(L"Updates appeared after stabilization. Continuing update cycle...");
                         result.success = true;
@@ -616,6 +624,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             }
         }
 
+        result.finalVerificationDone = true;
         notify(Phase::UpToDate, L"System is up to date.");
         log(L"No updates found and no restart pending after final verification.");
         result.success = true;
@@ -686,6 +695,10 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
     log(L"Summary: " + std::to_wstring(installed) + L" installed, " + std::to_wstring(failed) +
         L" failed, " + std::to_wstring(skipped) + L" skipped.");
+
+    result.updatesInstalled = static_cast<int>(installed);
+    result.updatesFailed = static_cast<int>(failed);
+    result.updatesSkipped = static_cast<int>(skipped);
 
     if (rebootRequired) {
         notify(Phase::RebootRequired, L"Restarting...");

@@ -50,6 +50,8 @@ private:
     std::wstring lastStatus_ = L"Starting...";
     bool hasProgressLine_ = false;
 
+    static constexpr int kMaxRebootCount = 5;
+
     bool elevateIfNeeded();
     bool ensureInternet();
     bool createUi();
@@ -61,6 +63,16 @@ private:
     void finishSuccess();
     void finishError(const std::wstring& message);
     void requestReboot();
+    void logSummary(const std::wstring& result);
+
+    int runNumber_ = 0;
+    int totalUpdatesFound_ = 0;
+    int totalUpdatesInstalled_ = 0;
+    int totalUpdatesFailed_ = 0;
+    bool hadPendingRestart_ = false;
+    bool finalVerificationDone_ = false;
+    bool cleanupDone_ = false;
+    std::wstring executionType_;
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

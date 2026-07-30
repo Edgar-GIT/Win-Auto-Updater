@@ -65,6 +65,27 @@ int App::run() {
         return 1;
     }
 
+    const auto tempDir = StateManager::baseDir();
+    std::error_code ec;
+    std::filesystem::create_directories(tempDir, ec);
+    appendLog(L"Creating temporary directory...");
+    appendLog(tempDir.wstring());
+    if (ec) {
+        appendLog(L"FAILED: " + std::wstring(ec.message().begin(), ec.message().end()));
+    } else {
+        appendLog(L"OK");
+    }
+
+    const auto logPath = tempDir / L"updater.log";
+    logFile_.open(logPath);
+    appendLog(L"Creating updater.log...");
+    appendLog(logPath.wstring());
+    if (logFile_.is_open()) {
+        appendLog(L"OK");
+    } else {
+        appendLog(L"FAILED");
+    }
+
     logger_.setStatusSink([this](std::wstring_view message) {
         auto* copy = heapCopy(message);
         if (!PostMessageW(hwnd_, WM_APP_STATUS, 0, reinterpret_cast<LPARAM>(copy))) {
@@ -73,6 +94,10 @@ int App::run() {
     });
 
     logger_.setLogSink([this](std::wstring_view message) {
+        if (logFile_.is_open()) {
+            logFile_ << message << L"\n";
+            logFile_.flush();
+        }
         auto* copy = heapCopy(message);
         if (!PostMessageW(hwnd_, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
             delete copy;
@@ -304,39 +329,34 @@ void App::performUninstall() {
     }
 
     if (!exe.empty()) {
-        wchar_t tempBuf[MAX_PATH]{};
-        if (GetTempPathW(MAX_PATH, tempBuf) && tempBuf[0]) {
-            const std::wstring tempDir(tempBuf);
-            const std::wstring scriptPath = tempDir + L"SingleUpdateUninstall.cmd";
+        const auto scriptDir = StateManager::baseDir();
+        const std::wstring scriptPath = (scriptDir / L"uninstall.cmd").wstring();
+        const std::wstring exePath = exe.wstring();
 
-            const std::wstring exePath = exe.wstring();
+        std::string script;
+        script += "@echo off\r\n";
+        script += "timeout /t 2 /nobreak > nul\r\n";
+        script += "del \"" + std::string(exePath.begin(), exePath.end()) + "\" > nul 2>&1\r\n";
+        script += "if not exist \"" + std::string(exePath.begin(), exePath.end()) + "\" (\r\n";
+        script += "    rmdir /s /q \"" + std::string(scriptDir.wstring().begin(), scriptDir.wstring().end()) + "\" > nul 2>&1\r\n";
+        script += ")\r\n";
+        script += "del \"%~f0\" > nul 2>&1\r\n";
 
-            std::string script;
-            script += "@echo off\r\n";
-            script += "timeout /t 2 /nobreak > nul\r\n";
-            script += "del \"" + std::string(exePath.begin(), exePath.end()) + "\" > nul 2>&1\r\n";
-            script += "if not exist \"" + std::string(exePath.begin(), exePath.end()) + "\" (\r\n";
-            script += "    del \"" + std::string(scriptPath.begin(), scriptPath.end()) + "\" > nul 2>&1\r\n";
-            script += "    rmdir /s /q \"" + std::string(tempDir.begin(), tempDir.end()) + "SingleUpdate\" > nul 2>&1\r\n";
-            script += ")\r\n";
-            script += "del \"%~f0\" > nul 2>&1\r\n";
+        std::ofstream out(scriptPath.c_str());
+        out << script;
+        out.close();
 
-            std::ofstream out(scriptPath.c_str());
-            out << script;
-            out.close();
-
-            std::wstring cmdLine = scriptPath;
-            STARTUPINFOW si{};
-            si.cb = sizeof(si);
-            PROCESS_INFORMATION pi{};
-            if (CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
-                               CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-                CloseHandle(pi.hThread);
-                CloseHandle(pi.hProcess);
-            }
-
-            appendLog(L"Self-cleanup script launched.");
+        std::wstring cmdLine = scriptPath;
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
         }
+
+        appendLog(L"Self-cleanup script launched.");
     }
 
     allowClose_ = true;

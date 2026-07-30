@@ -17,13 +17,15 @@
 
 namespace {
 
-std::filesystem::path stateDirectory() {
+constexpr const wchar_t* kDirName = L"WinAutoUpdater";
+
+std::filesystem::path appTempDir() {
     wchar_t buffer[MAX_PATH]{};
     const DWORD len = GetTempPathW(MAX_PATH, buffer);
     if (len == 0 || len > MAX_PATH) {
         return {};
     }
-    return std::filesystem::path(buffer) / L"SingleUpdate";
+    return std::filesystem::path(buffer) / kDirName;
 }
 
 std::wstring trim(std::wstring_view text) {
@@ -94,17 +96,17 @@ int parseInt(std::wstring_view json, std::wstring_view key) {
 
 }  // namespace
 
+std::filesystem::path StateManager::baseDir() {
+    return appTempDir();
+}
+
 std::filesystem::path StateManager::filePath() {
-    auto dir = stateDirectory();
-    if (dir.empty()) {
-        return {};
-    }
-    return dir / L"state.json";
+    return baseDir() / L"state.json";
 }
 
 StateManager::StateManager() : filePath_(filePath()) {}
 
-StateManager::State StateManager::load() const {
+StateManager::State StateManager::load(std::wstring* error) const {
     State state;
 
     std::error_code ec;
@@ -114,6 +116,7 @@ StateManager::State StateManager::load() const {
 
     std::wifstream file(filePath_);
     if (!file.is_open()) {
+        if (error) *error = L"Failed to open " + filePath_.wstring() + L" for reading.";
         return state;
     }
 
@@ -131,18 +134,21 @@ StateManager::State StateManager::load() const {
     return state;
 }
 
-bool StateManager::save(const State& state) const {
+bool StateManager::save(const State& state, std::wstring* error) const {
     std::error_code ec;
     const auto dir = filePath_.parent_path();
     if (!std::filesystem::exists(dir, ec)) {
         std::filesystem::create_directories(dir, ec);
         if (ec) {
+            if (error) *error = L"Failed to create directory " + dir.wstring() + L": " +
+                                 std::wstring(ec.message().begin(), ec.message().end());
             return false;
         }
     }
 
     std::wofstream file(filePath_);
     if (!file.is_open()) {
+        if (error) *error = L"Failed to open " + filePath_.wstring() + L" for writing.";
         return false;
     }
 

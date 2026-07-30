@@ -12,6 +12,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 class App {
@@ -44,6 +46,7 @@ private:
     HFONT terminalFont_ = nullptr;
     HBRUSH terminalBrush_ = nullptr;
     Logger logger_;
+    std::wofstream logFile_;
     std::atomic<bool> running_{true};
     std::atomic<bool> finished_{false};
     std::atomic<bool> allowClose_{false};

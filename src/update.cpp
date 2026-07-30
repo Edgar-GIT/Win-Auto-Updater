@@ -13,9 +13,299 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
+#include <thread>
 
 namespace {
+
+// IIDs for COM callback interfaces not declared in MinGW headers
+// IDownloadProgressChangedCallback: C6E1C796-9746-4DD8-A78F-A5F4F8BDFBB3
+// IDownloadCompletedCallback: 2C059B3A-2FB8-43C7-8E42-06720A8D56B7
+// IInstallationProgressChangedCallback: 2B13BDD9-94D6-4253-8B46-96D1CA1A3013
+// IInstallationCompletedCallback: E4E2F910-DC0A-4B81-9C92-4E996E8C2282
+
+const GUID IID_DownloadProgress = 
+    {0xC6E1C796, 0x9746, 0x4DD8, {0xA7, 0x8F, 0xA5, 0xF4, 0xF8, 0xBD, 0xFB, 0xB3}};
+const GUID IID_DownloadComplete = 
+    {0x2C059B3A, 0x2FB8, 0x43C7, {0x8E, 0x42, 0x06, 0x72, 0x0A, 0x8D, 0x56, 0xB7}};
+const GUID IID_InstallProgress = 
+    {0x2B13BDD9, 0x94D6, 0x4253, {0x8B, 0x46, 0x96, 0xD1, 0xCA, 0x1A, 0x30, 0x13}};
+const GUID IID_InstallComplete = 
+    {0xE4E2F910, 0xDC0A, 0x4B81, {0x9C, 0x92, 0x4E, 0x99, 0x6E, 0x8C, 0x22, 0x82}};
+
+// Combined vtable: IUnknown(3) + one Invoke entry.
+// All four callback interfaces share the same layout (3 IUnknown + 1 Invoke),
+// so a single vtable works for all.
+
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void*, REFIID, void**);
+    ULONG (STDMETHODCALLTYPE *AddRef)(void*);
+    ULONG (STDMETHODCALLTYPE *Release)(void*);
+    HRESULT (STDMETHODCALLTYPE *Invoke)(void*, void*, void*);
+} CallbackVtbl;
+
+struct CallbackObj {
+    CallbackVtbl* lpVtbl;
+    LONG refCount;
+};
+
+HRESULT STDMETHODCALLTYPE callbackQI(void* self, REFIID riid, void** ppv) {
+    if (!ppv) return E_POINTER;
+    if (riid == IID_IUnknown ||
+        IsEqualGUID(riid, IID_DownloadProgress) ||
+        IsEqualGUID(riid, IID_DownloadComplete) ||
+        IsEqualGUID(riid, IID_InstallProgress) ||
+        IsEqualGUID(riid, IID_InstallComplete)) {
+        *ppv = self;
+        static_cast<CallbackObj*>(self)->lpVtbl->AddRef(self);
+        return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+}
+
+ULONG STDMETHODCALLTYPE callbackAddRef(void* self) {
+    return InterlockedIncrement(&static_cast<CallbackObj*>(self)->refCount);
+}
+
+ULONG STDMETHODCALLTYPE callbackRelease(void* self) {
+    LONG r = InterlockedDecrement(&static_cast<CallbackObj*>(self)->refCount);
+    if (r == 0) delete static_cast<CallbackObj*>(self);
+    return r;
+}
+
+HRESULT STDMETHODCALLTYPE callbackInvoke(void*, void*, void*) {
+    return S_OK;
+}
+
+CallbackVtbl g_callbackVtbl = {callbackQI, callbackAddRef, callbackRelease, callbackInvoke};
+
+CallbackObj* makeCallback() {
+    auto* obj = new CallbackObj{&g_callbackVtbl, 1};
+    return obj;
+}
+
+// Async download with progress polling
+
+UpdateEngine::StepOutcome downloadWithProgress(
+    IUpdateDownloader* downloader, IUpdateCollection* collection,
+    UpdateEngine::ProgressCallback progressCb, std::wstring_view title) {
+
+    UpdateEngine::StepOutcome outcome;
+
+    downloader->put_Updates(collection);
+    downloader->put_Priority(dpHigh);
+    downloader->put_IsForced(VARIANT_TRUE);
+
+    ComPtr<IDownloadJob> job;
+    VARIANT state{};
+    state.vt = VT_EMPTY;
+
+    ComPtr<IUnknown> progressCB(makeCallback());
+    ComPtr<IUnknown> completeCB(makeCallback());
+
+    HRESULT hr = downloader->BeginDownload(
+        progressCB.get(), completeCB.get(), state, job.put());
+
+    if (FAILED(hr) || !job) {
+        // Fallback to synchronous if BeginDownload fails
+        progressCb(title, 10);
+        ComPtr<IDownloadResult> result;
+        hr = downloader->Download(result.put());
+        if (FAILED(hr) || !result) {
+            outcome.detail = L"Download API failed (" + formatHresult(hr) + L").";
+            return outcome;
+        }
+        OperationResultCode code = orcNotStarted;
+        result->get_ResultCode(&code);
+        if (!operationOk(code)) {
+            LONG overallHr = 0;
+            result->get_HResult(&overallHr);
+            outcome.detail = L"Download failed: " + operationResultName(code) +
+                             L" (" + formatHresult(overallHr) + L").";
+            return outcome;
+        }
+        outcome.ok = true;
+        return outcome;
+    }
+
+    // Poll progress
+    while (true) {
+        VARIANT_BOOL done = VARIANT_FALSE;
+        hr = job->get_IsCompleted(&done);
+        if (FAILED(hr)) break;
+
+        ComPtr<IDownloadProgress> dlProgress;
+        if (SUCCEEDED(job->GetProgress(dlProgress.put())) && dlProgress) {
+            LONG pct = 0;
+            if (SUCCEEDED(dlProgress->get_PercentComplete(&pct))) {
+                progressCb(title, pct);
+            }
+        }
+
+        if (done == VARIANT_TRUE) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    ComPtr<IDownloadResult> result;
+    hr = downloader->EndDownload(job.get(), result.put());
+    if (FAILED(hr) || !result) {
+        outcome.detail = L"Download EndDownload failed (" + formatHresult(hr) + L").";
+        return outcome;
+    }
+
+    OperationResultCode code = orcNotStarted;
+    result->get_ResultCode(&code);
+
+    ComPtr<IUpdateDownloadResult> updateResult;
+    if (SUCCEEDED(result->GetUpdateResult(0, updateResult.put())) && updateResult) {
+        LONG updateHr = 0;
+        OperationResultCode updateCode = orcNotStarted;
+        updateResult->get_HResult(&updateHr);
+        updateResult->get_ResultCode(&updateCode);
+        if (!operationOk(updateCode)) {
+            outcome.detail = L"Download failed: " + operationResultName(updateCode) +
+                             L" (" + formatHresult(updateHr) + L").";
+            return outcome;
+        }
+    } else if (!operationOk(code)) {
+        LONG overallHr = 0;
+        result->get_HResult(&overallHr);
+        outcome.detail = L"Download failed: " + operationResultName(code) +
+                         L" (" + formatHresult(overallHr) + L").";
+        return outcome;
+    }
+
+    outcome.ok = true;
+    return outcome;
+}
+
+UpdateEngine::StepOutcome installWithProgress(
+    IUpdateInstaller* installer, IUpdateCollection* collection,
+    UpdateEngine::ProgressCallback progressCb, std::wstring_view title) {
+
+    UpdateEngine::StepOutcome outcome;
+
+    installer->put_Updates(collection);
+    installer->put_IsForced(VARIANT_TRUE);
+    installer->put_AllowSourcePrompts(VARIANT_FALSE);
+
+    VARIANT_BOOL rebootBefore = VARIANT_FALSE;
+    if (SUCCEEDED(installer->get_RebootRequiredBeforeInstallation(&rebootBefore)) &&
+        rebootBefore == VARIANT_TRUE) {
+        outcome.rebootRequired = true;
+        outcome.detail = L"Windows requires reboot before this update.";
+        return outcome;
+    }
+
+    ComPtr<IInstallationJob> job;
+    VARIANT state{};
+    state.vt = VT_EMPTY;
+
+    ComPtr<IUnknown> progressCB(makeCallback());
+    ComPtr<IUnknown> completeCB(makeCallback());
+
+    HRESULT hr = installer->BeginInstall(
+        progressCB.get(), completeCB.get(), state, job.put());
+
+    if (FAILED(hr) || !job) {
+        // Fallback to synchronous
+        progressCb(title, 10);
+        ComPtr<IInstallationResult> result;
+        hr = installer->Install(result.put());
+        if (FAILED(hr) || !result) {
+            outcome.detail = L"Install API failed (" + formatHresult(hr) + L").";
+            return outcome;
+        }
+        OperationResultCode code = orcNotStarted;
+        result->get_ResultCode(&code);
+        ComPtr<IUpdateInstallationResult> updateResult;
+        if (SUCCEEDED(result->GetUpdateResult(0, updateResult.put())) && updateResult) {
+            LONG updateHr = 0;
+            OperationResultCode updateCode = orcNotStarted;
+            VARIANT_BOOL reboot = VARIANT_FALSE;
+            updateResult->get_HResult(&updateHr);
+            updateResult->get_ResultCode(&updateCode);
+            updateResult->get_RebootRequired(&reboot);
+            if (!operationOk(updateCode)) {
+                outcome.detail = L"Install failed: " + operationResultName(updateCode) +
+                                 L" (" + formatHresult(updateHr) + L").";
+                return outcome;
+            }
+            if (reboot == VARIANT_TRUE || resultNeedsReboot(result.get())) {
+                outcome.rebootRequired = true;
+            }
+        } else if (!operationOk(code)) {
+            LONG overallHr = 0;
+            result->get_HResult(&overallHr);
+            outcome.detail = L"Install failed: " + operationResultName(code) +
+                             L" (" + formatHresult(overallHr) + L").";
+            return outcome;
+        } else if (resultNeedsReboot(result.get())) {
+            outcome.rebootRequired = true;
+        }
+        outcome.ok = true;
+        return outcome;
+    }
+
+    // Poll progress
+    while (true) {
+        VARIANT_BOOL done = VARIANT_FALSE;
+        hr = job->get_IsCompleted(&done);
+        if (FAILED(hr)) break;
+
+        ComPtr<IInstallationProgress> instProgress;
+        if (SUCCEEDED(job->GetProgress(instProgress.put())) && instProgress) {
+            LONG pct = 0;
+            if (SUCCEEDED(instProgress->get_PercentComplete(&pct))) {
+                progressCb(title, pct);
+            }
+        }
+
+        if (done == VARIANT_TRUE) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    ComPtr<IInstallationResult> result;
+    hr = installer->EndInstall(job.get(), result.put());
+    if (FAILED(hr) || !result) {
+        outcome.detail = L"Install EndInstall failed (" + formatHresult(hr) + L").";
+        return outcome;
+    }
+
+    OperationResultCode code = orcNotStarted;
+    result->get_ResultCode(&code);
+
+    ComPtr<IUpdateInstallationResult> updateResult;
+    if (SUCCEEDED(result->GetUpdateResult(0, updateResult.put())) && updateResult) {
+        LONG updateHr = 0;
+        OperationResultCode updateCode = orcNotStarted;
+        VARIANT_BOOL reboot = VARIANT_FALSE;
+        updateResult->get_HResult(&updateHr);
+        updateResult->get_ResultCode(&updateCode);
+        updateResult->get_RebootRequired(&reboot);
+        if (!operationOk(updateCode)) {
+            outcome.detail = L"Install failed: " + operationResultName(updateCode) +
+                             L" (" + formatHresult(updateHr) + L").";
+            return outcome;
+        }
+        if (reboot == VARIANT_TRUE || resultNeedsReboot(result.get())) {
+            outcome.rebootRequired = true;
+        }
+    } else if (!operationOk(code)) {
+        LONG overallHr = 0;
+        result->get_HResult(&overallHr);
+        outcome.detail = L"Install failed: " + operationResultName(code) +
+                         L" (" + formatHresult(overallHr) + L").";
+        return outcome;
+    } else if (resultNeedsReboot(result.get())) {
+        outcome.rebootRequired = true;
+    }
+
+    outcome.ok = true;
+    return outcome;
+}
 
 constexpr const wchar_t* kSearchCriteria = L"IsInstalled=0 and IsHidden=0";
 
@@ -374,8 +664,8 @@ void UpdateEngine::progress(std::wstring_view title, int percent) const {
 }
 
 UpdateEngine::StepOutcome UpdateEngine::downloadOne(IUpdateSession* session, IUpdate* update,
-                                                    IUpdateCollection* searchResults, LONG updateIndex,
-                                                    std::wstring_view title) const {
+                                                     IUpdateCollection* searchResults, LONG updateIndex,
+                                                     std::wstring_view title) const {
     StepOutcome outcome;
 
     ComPtr<IUpdateCollection> collection = makeSingleCollection(update);
@@ -395,54 +685,19 @@ UpdateEngine::StepOutcome UpdateEngine::downloadOne(IUpdateSession* session, IUp
         return outcome;
     }
 
-    downloader->put_Updates(collection.get());
-    downloader->put_Priority(dpHigh);
-    downloader->put_IsForced(VARIANT_TRUE);
-
-    progress(title, 10);
     log(L"Downloading: " + std::wstring(title));
-
-    ComPtr<IDownloadResult> result;
-    hr = downloader->Download(result.put());
-    if (FAILED(hr) || !result) {
-        outcome.detail = L"Download API failed (" + formatHresult(hr) + L").";
-        return outcome;
-    }
-
-    OperationResultCode code = orcNotStarted;
-    result->get_ResultCode(&code);
-
-    ComPtr<IUpdateDownloadResult> updateResult;
-    if (SUCCEEDED(result->GetUpdateResult(0, updateResult.put())) && updateResult) {
-        LONG updateHr = 0;
-        OperationResultCode updateCode = orcNotStarted;
-        updateResult->get_HResult(&updateHr);
-        updateResult->get_ResultCode(&updateCode);
-
-        if (!operationOk(updateCode)) {
-            outcome.detail = L"Download failed: " + operationResultName(updateCode) + L" (" +
-                             formatHresult(updateHr) + L").";
-            log(L"  " + outcome.detail);
-            return outcome;
-        }
-    } else if (!operationOk(code)) {
-        LONG overallHr = 0;
-        result->get_HResult(&overallHr);
-        outcome.detail = L"Download failed: " + operationResultName(code) + L" (" +
-                         formatHresult(overallHr) + L").";
+    outcome = downloadWithProgress(downloader.get(), collection.get(), progress, title);
+    if (outcome.ok) {
+        log(L"  Download OK.");
+    } else {
         log(L"  " + outcome.detail);
-        return outcome;
     }
-
-    progress(title, 100);
-    log(L"  Download OK.");
-    outcome.ok = true;
     return outcome;
 }
 
 UpdateEngine::StepOutcome UpdateEngine::installOne(IUpdateSession* session, IUpdate* update,
-                                                   IUpdateCollection* searchResults, LONG updateIndex,
-                                                   std::wstring_view title) const {
+                                                    IUpdateCollection* searchResults, LONG updateIndex,
+                                                    std::wstring_view title) const {
     StepOutcome outcome;
 
     ComPtr<IUpdateCollection> collection = makeSingleCollection(update);
@@ -462,64 +717,13 @@ UpdateEngine::StepOutcome UpdateEngine::installOne(IUpdateSession* session, IUpd
         return outcome;
     }
 
-    installer->put_Updates(collection.get());
-    installer->put_IsForced(VARIANT_TRUE);
-    installer->put_AllowSourcePrompts(VARIANT_FALSE);
-
-    VARIANT_BOOL rebootBefore = VARIANT_FALSE;
-    if (SUCCEEDED(installer->get_RebootRequiredBeforeInstallation(&rebootBefore)) &&
-        rebootBefore == VARIANT_TRUE) {
-        outcome.rebootRequired = true;
-        outcome.detail = L"Windows requires reboot before this update.";
-        return outcome;
-    }
-
-    progress(title, 10);
     log(L"Installing: " + std::wstring(title));
-
-    ComPtr<IInstallationResult> result;
-    hr = installer->Install(result.put());
-    if (FAILED(hr) || !result) {
-        outcome.detail = L"Install API failed (" + formatHresult(hr) + L").";
-        return outcome;
-    }
-
-    OperationResultCode code = orcNotStarted;
-    result->get_ResultCode(&code);
-
-    ComPtr<IUpdateInstallationResult> updateResult;
-    if (SUCCEEDED(result->GetUpdateResult(0, updateResult.put())) && updateResult) {
-        LONG updateHr = 0;
-        OperationResultCode updateCode = orcNotStarted;
-        VARIANT_BOOL reboot = VARIANT_FALSE;
-        updateResult->get_HResult(&updateHr);
-        updateResult->get_ResultCode(&updateCode);
-        updateResult->get_RebootRequired(&reboot);
-
-        if (!operationOk(updateCode)) {
-            outcome.detail = L"Install failed: " + operationResultName(updateCode) + L" (" +
-                             formatHresult(updateHr) + L").";
-            log(L"  " + outcome.detail);
-            return outcome;
-        }
-
-        if (reboot == VARIANT_TRUE || resultNeedsReboot(result.get())) {
-            outcome.rebootRequired = true;
-        }
-    } else if (!operationOk(code)) {
-        LONG overallHr = 0;
-        result->get_HResult(&overallHr);
-        outcome.detail = L"Install failed: " + operationResultName(code) + L" (" +
-                         formatHresult(overallHr) + L").";
+    outcome = installWithProgress(installer.get(), collection.get(), progress, title);
+    if (outcome.ok) {
+        log(L"  Install OK.");
+    } else {
         log(L"  " + outcome.detail);
-        return outcome;
-    } else if (resultNeedsReboot(result.get())) {
-        outcome.rebootRequired = true;
     }
-
-    progress(title, 100);
-    log(L"  Install OK.");
-    outcome.ok = true;
     return outcome;
 }
 

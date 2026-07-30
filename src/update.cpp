@@ -593,8 +593,31 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             result.rebootRequired = true;
             return result;
         }
+        notify(Phase::CheckingAgain, L"Final verification...");
+        log(L"No updates found. Waiting for catalog stabilization...");
+        Sleep(8000);
+
+        log(L"Performing final update search...");
+        {
+            ComPtr<ISearchResult> finalResult;
+            hr = searcher->Search(BStr(kSearchCriteria), finalResult.put());
+            if (SUCCEEDED(hr) && finalResult) {
+                ComPtr<IUpdateCollection> finalUpdates;
+                hr = finalResult->get_Updates(finalUpdates.put());
+                if (SUCCEEDED(hr) && finalUpdates) {
+                    const long finalCount = collectionCount(finalUpdates.get());
+                    log(L"  Final search found " + std::to_wstring(finalCount) + L" update(s).");
+                    if (finalCount > 0) {
+                        log(L"Updates appeared after stabilization. Continuing update cycle...");
+                        result.success = true;
+                        return result;
+                    }
+                }
+            }
+        }
+
         notify(Phase::UpToDate, L"System is up to date.");
-        log(L"No updates found and no restart pending.");
+        log(L"No updates found and no restart pending after final verification.");
         result.success = true;
         result.upToDate = true;
         return result;

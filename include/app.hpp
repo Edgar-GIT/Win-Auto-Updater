@@ -56,7 +56,6 @@ private:
     void setStatus(std::wstring message);
     void appendLog(std::wstring message);
     void updateProgressLine(std::wstring message);
-    void showCompletionUi();
     void performUninstall();
     void worker();
     void finishSuccess();

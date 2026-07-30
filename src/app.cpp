@@ -13,6 +13,7 @@
 #include <wininet.h>
 
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 namespace {
@@ -281,36 +282,66 @@ void App::updateProgressLine(std::wstring message) {
     hasProgressLine_ = true;
 }
 
-void App::showCompletionUi() {
-    finished_ = true;
-    allowClose_ = true;
-    setStatus(L"This computer is ready.");
-    appendLog(L"All available updates have been installed.");
-    appendLog(L"Use Uninstall to remove the scheduled task and temporary files.");
-
-    if (uninstallButton_) {
-        ShowWindow(uninstallButton_, SW_SHOW);
-        EnableWindow(uninstallButton_, TRUE);
-    }
-    if (closeButton_) {
-        ShowWindow(closeButton_, SW_SHOW);
-        EnableWindow(closeButton_, TRUE);
-    }
-}
-
 void App::performUninstall() {
     const auto exe = currentExecutable();
+
+    appendLog(L"Uninstalling...");
+
     Scheduler scheduler(exe);
     const bool taskRemoved = scheduler.remove();
-    Cleanup::removeTempFiles();
-
     appendLog(taskRemoved ? L"Scheduled task removed." : L"Scheduled task was not found.");
+
+    StateManager stateManager;
+    stateManager.remove();
+    appendLog(L"State file removed.");
+
+    Cleanup::removeTempFiles();
     appendLog(L"Temporary files removed.");
 
     if (uninstallButton_) {
         EnableWindow(uninstallButton_, FALSE);
         SetWindowTextW(uninstallButton_, L"Uninstalled");
     }
+
+    if (!exe.empty()) {
+        wchar_t tempBuf[MAX_PATH]{};
+        if (GetTempPathW(MAX_PATH, tempBuf) && tempBuf[0]) {
+            const std::wstring tempDir(tempBuf);
+            const std::wstring scriptPath = tempDir + L"SingleUpdateUninstall.cmd";
+
+            const std::wstring exePath = exe.wstring();
+
+            std::string script;
+            script += "@echo off\r\n";
+            script += "timeout /t 2 /nobreak > nul\r\n";
+            script += "del \"" + std::string(exePath.begin(), exePath.end()) + "\" > nul 2>&1\r\n";
+            script += "if not exist \"" + std::string(exePath.begin(), exePath.end()) + "\" (\r\n";
+            script += "    del \"" + std::string(scriptPath.begin(), scriptPath.end()) + "\" > nul 2>&1\r\n";
+            script += "    rmdir /s /q \"" + std::string(tempDir.begin(), tempDir.end()) + "SingleUpdate\" > nul 2>&1\r\n";
+            script += ")\r\n";
+            script += "del \"%~f0\" > nul 2>&1\r\n";
+
+            std::ofstream out(scriptPath.c_str());
+            out << script;
+            out.close();
+
+            std::wstring cmdLine = scriptPath;
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+
+            appendLog(L"Self-cleanup script launched.");
+        }
+    }
+
+    allowClose_ = true;
+    running_ = false;
+    DestroyWindow(hwnd_);
 }
 
 void App::worker() {
@@ -438,8 +469,9 @@ void App::finishSuccess() {
         EnableWindow(closeButton_, TRUE);
     }
     if (uninstallButton_) {
-        EnableWindow(uninstallButton_, FALSE);
-        SetWindowTextW(uninstallButton_, L"Uninstalled");
+        ShowWindow(uninstallButton_, SW_SHOW);
+        EnableWindow(uninstallButton_, TRUE);
+        SetWindowTextW(uninstallButton_, L"Uninstall");
     }
 }
 

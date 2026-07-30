@@ -175,6 +175,27 @@ bool ensureWindowsUpdateService() {
 
 }  // namespace
 
+bool UpdateEngine::hasPendingRestart(IUpdateSession* session) const {
+    log(L"Checking for pending restart via Windows Update Agent API...");
+
+    ComPtr<IUpdateInstaller> installer;
+    HRESULT hr = session->CreateUpdateInstaller(installer.put());
+    if (FAILED(hr) || !installer) {
+        log(L"  Failed to create installer for pending-restart check.");
+        return false;
+    }
+
+    VARIANT_BOOL rebootRequired = VARIANT_FALSE;
+    hr = installer->get_RebootRequiredBeforeInstallation(&rebootRequired);
+    if (FAILED(hr)) {
+        log(L"  get_RebootRequiredBeforeInstallation HRESULT = " + formatHresult(hr));
+        return false;
+    }
+
+    log(L"  RebootRequiredBeforeInstallation = " + std::to_wstring(rebootRequired == VARIANT_TRUE));
+    return rebootRequired == VARIANT_TRUE;
+}
+
 ComPtr<IUpdateCollection> UpdateEngine::makeSingleCollection(IUpdate* update) const {
     ComPtr<IUpdateCollection> collection;
 
@@ -492,8 +513,17 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
     const long count = collectionCount(updates.get());
     if (count == 0) {
+        log(L"No pending updates found. Checking for installed updates needing restart...");
+        if (hasPendingRestart(session.get())) {
+            notify(Phase::RebootRequired, L"Restart required to finish installation.");
+            log(L"Updates are installed but pending restart. Reboot needed.");
+            result.success = true;
+            result.pendingRestart = true;
+            result.rebootRequired = true;
+            return result;
+        }
         notify(Phase::UpToDate, L"System is up to date.");
-        log(L"No updates found.");
+        log(L"No updates found and no restart pending.");
         result.success = true;
         result.upToDate = true;
         return result;

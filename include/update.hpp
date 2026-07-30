@@ -28,6 +28,7 @@ public:
     struct Result {
         bool success = false;
         bool rebootRequired = false;
+        bool pendingRestart = false;
         bool upToDate = false;
         bool hadFailures = false;
         std::wstring message;
@@ -57,6 +58,7 @@ private:
                             LONG updateIndex, std::wstring_view title) const;
     StepOutcome installOne(IUpdateSession* session, IUpdate* update, IUpdateCollection* searchResults,
                            LONG updateIndex, std::wstring_view title) const;
+    bool hasPendingRestart(IUpdateSession* session) const;
     ComPtr<IUpdateCollection> makeSingleCollection(IUpdate* update) const;
     ComPtr<IUpdateCollection> makeCollectionFallback(IUpdateCollection* searchResults, LONG updateIndex) const;
 };

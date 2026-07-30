@@ -173,27 +173,98 @@ bool ensureWindowsUpdateService() {
     return running;
 }
 
+bool systemNeedsReboot() {
+    HKEY key = nullptr;
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing",
+                      0, KEY_READ, &key) == ERROR_SUCCESS) {
+        DWORD value = 0;
+        DWORD size = sizeof(value);
+        const LSTATUS status = RegQueryValueExW(key, L"RebootPending", nullptr, nullptr,
+                                                reinterpret_cast<LPBYTE>(&value), &size);
+        RegCloseKey(key);
+        if (status == ERROR_SUCCESS) {
+            return true;
+        }
+    }
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+                      0, KEY_READ, &key) == ERROR_SUCCESS) {
+        wchar_t buffer[1]{};
+        DWORD size = 0;
+        const LSTATUS status = RegQueryValueExW(key, L"PendingFileRenameOperations", nullptr,
+                                                nullptr, reinterpret_cast<LPBYTE>(buffer), &size);
+        RegCloseKey(key);
+        if (status == ERROR_SUCCESS && size > 0) {
+            return true;
+        }
+    }
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SOFTWARE\\Microsoft\\Updates",
+                      0, KEY_READ, &key) == ERROR_SUCCESS) {
+        wchar_t buffer[1]{};
+        DWORD size = 0;
+        const LSTATUS status = RegQueryValueExW(key, L"UpdateExeVolatile", nullptr,
+                                                nullptr, reinterpret_cast<LPBYTE>(buffer), &size);
+        RegCloseKey(key);
+        if (status == ERROR_SUCCESS && size > 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 }  // namespace
 
 bool UpdateEngine::hasPendingRestart(IUpdateSession* session) const {
     log(L"Checking for pending restart via Windows Update Agent API...");
 
-    ComPtr<IUpdateInstaller> installer;
-    HRESULT hr = session->CreateUpdateInstaller(installer.put());
-    if (FAILED(hr) || !installer) {
-        log(L"  Failed to create installer for pending-restart check.");
-        return false;
+    {
+        ComPtr<ISystemInformation> sysInfo;
+        HRESULT hr = CoCreateInstance(CLSID_SystemInformation, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_ISystemInformation, reinterpret_cast<void**>(sysInfo.put()));
+        if (SUCCEEDED(hr) && sysInfo) {
+            VARIANT_BOOL reboot = VARIANT_FALSE;
+            hr = sysInfo->get_RebootRequired(&reboot);
+            log(L"  ISystemInformation::get_RebootRequired = " + std::to_wstring(reboot == VARIANT_TRUE));
+            if (SUCCEEDED(hr) && reboot == VARIANT_TRUE) {
+                log(L"  -> Pending restart detected (ISystemInformation).");
+                return true;
+            }
+        } else {
+            log(L"  ISystemInformation co-create failed: " + formatHresult(hr));
+        }
     }
 
-    VARIANT_BOOL rebootRequired = VARIANT_FALSE;
-    hr = installer->get_RebootRequiredBeforeInstallation(&rebootRequired);
-    if (FAILED(hr)) {
-        log(L"  get_RebootRequiredBeforeInstallation HRESULT = " + formatHresult(hr));
-        return false;
+    {
+        ComPtr<IUpdateInstaller> installer;
+        HRESULT hr = session->CreateUpdateInstaller(installer.put());
+        if (SUCCEEDED(hr) && installer) {
+            VARIANT_BOOL rebootRequired = VARIANT_FALSE;
+            hr = installer->get_RebootRequiredBeforeInstallation(&rebootRequired);
+            log(L"  IUpdateInstaller::get_RebootRequiredBeforeInstallation = " +
+                std::to_wstring(rebootRequired == VARIANT_TRUE));
+            if (SUCCEEDED(hr) && rebootRequired == VARIANT_TRUE) {
+                log(L"  -> Pending restart detected (RebootRequiredBeforeInstallation).");
+                return true;
+            }
+        } else {
+            log(L"  IUpdateInstaller create failed: " + formatHresult(hr));
+        }
     }
 
-    log(L"  RebootRequiredBeforeInstallation = " + std::to_wstring(rebootRequired == VARIANT_TRUE));
-    return rebootRequired == VARIANT_TRUE;
+    log(L"  WUAPI reports no pending restart. Checking system-level indicators...");
+    if (systemNeedsReboot()) {
+        log(L"  -> Pending restart detected via system-level indicators.");
+        return true;
+    }
+
+    log(L"  No pending restart detected.");
+    return false;
 }
 
 ComPtr<IUpdateCollection> UpdateEngine::makeSingleCollection(IUpdate* update) const {

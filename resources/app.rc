@@ -1,7 +1,10 @@
 #include <winver.h>
 #include "resource.h"
 
+#define RT_MANIFEST 24
+
 IDI_APPICON ICON "icon.ico"
+1 RT_MANIFEST "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION    1,0,0,0
@@ -16,13 +19,13 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName",      "Single Update"
-            VALUE "FileDescription",  "Single Update"
+            VALUE "CompanyName",      ""
+            VALUE "FileDescription",  "Windows Update Automation Tool"
             VALUE "FileVersion",      "1.0.0.0"
             VALUE "InternalName",     "SingleUpdate"
-            VALUE "LegalCopyright",   "Copyright (C) 2026"
+            VALUE "LegalCopyright",   ""
             VALUE "OriginalFilename", "SingleUpdate.exe"
-            VALUE "ProductName",      "Single Update"
+            VALUE "ProductName",      "Win Auto Updater"
             VALUE "ProductVersion",   "1.0.0.0"
         END
     END

@@ -338,34 +338,9 @@ void App::performUninstall() {
     }
 
     if (!exe.empty()) {
-        const auto scriptDir = StateManager::baseDir();
-        const std::wstring scriptPath = (scriptDir / L"uninstall.cmd").wstring();
-        const std::wstring exePath = exe.wstring();
-
-        std::string script;
-        script += "@echo off\r\n";
-        script += "timeout /t 2 /nobreak > nul\r\n";
-        script += "del \"" + std::string(exePath.begin(), exePath.end()) + "\" > nul 2>&1\r\n";
-        script += "if not exist \"" + std::string(exePath.begin(), exePath.end()) + "\" (\r\n";
-        script += "    rmdir /s /q \"" + std::string(scriptDir.wstring().begin(), scriptDir.wstring().end()) + "\" > nul 2>&1\r\n";
-        script += ")\r\n";
-        script += "del \"%~f0\" > nul 2>&1\r\n";
-
-        std::ofstream out(scriptPath.c_str());
-        out << script;
-        out.close();
-
-        std::wstring cmdLine = scriptPath;
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        if (CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
-                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
-
-        appendLog(L"Self-cleanup script launched.");
+        // Schedule executable for deletion on next reboot — no script files written to disk
+        MoveFileExW(exe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        appendLog(L"Executable will be removed on next restart.");
     }
 
     allowClose_ = true;

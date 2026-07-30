@@ -26,7 +26,7 @@ target_include_directories(SingleUpdate PRIVATE
 )
 
 set_source_files_properties(resources/app.rc PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/resources/icon.ico"
+    OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/resources/icon.ico;${CMAKE_SOURCE_DIR}/resources/app.manifest"
 )
 
 target_compile_definitions(SingleUpdate PRIVATE

@@ -4,7 +4,10 @@
 #include <string>
 #include <string_view>
 
+#include "com_ptr.hpp"
+
 struct IUpdate;
+struct IUpdateCollection;
 struct IUpdateSession;
 
 class UpdateEngine {
@@ -50,6 +53,10 @@ private:
     void log(std::wstring_view message) const;
     void progress(std::wstring_view title, int percent) const;
 
-    StepOutcome downloadOne(IUpdateSession* session, IUpdate* update, std::wstring_view title) const;
-    StepOutcome installOne(IUpdateSession* session, IUpdate* update, std::wstring_view title) const;
+    StepOutcome downloadOne(IUpdateSession* session, IUpdate* update, IUpdateCollection* searchResults,
+                            LONG updateIndex, std::wstring_view title) const;
+    StepOutcome installOne(IUpdateSession* session, IUpdate* update, IUpdateCollection* searchResults,
+                           LONG updateIndex, std::wstring_view title) const;
+    ComPtr<IUpdateCollection> makeSingleCollection(IUpdate* update) const;
+    ComPtr<IUpdateCollection> makeCollectionFallback(IUpdateCollection* searchResults, LONG updateIndex) const;
 };

@@ -173,23 +173,83 @@ bool ensureWindowsUpdateService() {
     return running;
 }
 
-ComPtr<IUpdateCollection> makeSingleCollection(IUpdate* update) {
+}  // namespace
+
+ComPtr<IUpdateCollection> UpdateEngine::makeSingleCollection(IUpdate* update) const {
     ComPtr<IUpdateCollection> collection;
+
+    log(L"Creating UpdateCollection...");
     HRESULT hr = CoCreateInstance(CLSID_UpdateCollection, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_IUpdateCollection, reinterpret_cast<void**>(collection.put()));
-    if (FAILED(hr) || !collection || !update) {
+    log(L"CoCreateInstance HRESULT = " + formatHresult(hr));
+    if (FAILED(hr)) {
+        log(L"  FAILED: CoCreateInstance for IUpdateCollection.");
+        return {};
+    }
+    if (!collection) {
+        log(L"  FAILED: CoCreateInstance returned null collection.");
+        return {};
+    }
+    if (!update) {
+        log(L"  FAILED: Update pointer is null.");
         return {};
     }
 
-    collection->Clear();
+    VARIANT_BOOL readOnly = VARIANT_FALSE;
+    hr = collection->get_ReadOnly(&readOnly);
+    log(L"Collection ReadOnly = " + std::to_wstring(readOnly == VARIANT_TRUE));
+
+    log(L"Adding update...");
     LONG index = 0;
-    if (FAILED(collection->Add(update, &index))) {
+    hr = collection->Add(update, &index);
+    log(L"Add HRESULT = " + formatHresult(hr) + L", index = " + std::to_wstring(index));
+    if (FAILED(hr)) {
+        log(L"  FAILED: Add update to collection.");
         return {};
     }
+
     return collection;
 }
 
-}  // namespace
+ComPtr<IUpdateCollection> UpdateEngine::makeCollectionFallback(IUpdateCollection* searchResults,
+                                                               LONG updateIndex) const {
+    log(L"--- Fallback: creating collection via Copy from search results ---");
+
+    if (!searchResults) {
+        log(L"  FAILED: search results collection is null.");
+        return {};
+    }
+
+    log(L"Creating writable copy of search results collection...");
+    ComPtr<IUpdateCollection> copy;
+    HRESULT hr = searchResults->Copy(copy.put());
+    log(L"Copy HRESULT = " + formatHresult(hr));
+    if (FAILED(hr) || !copy) {
+        log(L"  FAILED: Copy of search results.");
+        return {};
+    }
+
+    VARIANT_BOOL readOnly = VARIANT_FALSE;
+    hr = copy->get_ReadOnly(&readOnly);
+    log(L"Copy ReadOnly = " + std::to_wstring(readOnly == VARIANT_TRUE));
+
+    LONG count = 0;
+    hr = copy->get_Count(&count);
+    log(L"Copy item count = " + std::to_wstring(count));
+
+    if (SUCCEEDED(hr) && count > 0) {
+        log(L"Removing all items except index " + std::to_wstring(updateIndex) + L"...");
+        for (LONG i = count - 1; i >= 0; --i) {
+            if (i != updateIndex) {
+                copy->RemoveAt(i);
+            }
+        }
+        hr = copy->get_Count(&count);
+        log(L"After removal, count = " + std::to_wstring(count));
+    }
+
+    return copy;
+}
 
 void UpdateEngine::setStatusCallback(StatusCallback callback) {
     statusCallback_ = std::move(callback);
@@ -222,12 +282,17 @@ void UpdateEngine::progress(std::wstring_view title, int percent) const {
 }
 
 UpdateEngine::StepOutcome UpdateEngine::downloadOne(IUpdateSession* session, IUpdate* update,
+                                                    IUpdateCollection* searchResults, LONG updateIndex,
                                                     std::wstring_view title) const {
     StepOutcome outcome;
 
     ComPtr<IUpdateCollection> collection = makeSingleCollection(update);
     if (!collection) {
-        outcome.detail = L"Failed to prepare update collection.";
+        log(L"makeSingleCollection failed, trying fallback via search results Copy...");
+        collection = makeCollectionFallback(searchResults, updateIndex);
+    }
+    if (!collection) {
+        outcome.detail = L"Failed to prepare update collection (see log for COM HRESULT details).";
         return outcome;
     }
 
@@ -284,12 +349,17 @@ UpdateEngine::StepOutcome UpdateEngine::downloadOne(IUpdateSession* session, IUp
 }
 
 UpdateEngine::StepOutcome UpdateEngine::installOne(IUpdateSession* session, IUpdate* update,
+                                                   IUpdateCollection* searchResults, LONG updateIndex,
                                                    std::wstring_view title) const {
     StepOutcome outcome;
 
     ComPtr<IUpdateCollection> collection = makeSingleCollection(update);
     if (!collection) {
-        outcome.detail = L"Failed to prepare update collection.";
+        log(L"makeSingleCollection failed, trying fallback via search results Copy...");
+        collection = makeCollectionFallback(searchResults, updateIndex);
+    }
+    if (!collection) {
+        outcome.detail = L"Failed to prepare update collection (see log for COM HRESULT details).";
         return outcome;
     }
 
@@ -466,7 +536,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         }
 
         notify(Phase::Downloading, L"Downloading...");
-        const StepOutcome download = downloadOne(session.get(), update.get(), title);
+        const StepOutcome download = downloadOne(session.get(), update.get(), updates.get(), i, title);
         if (!download.ok) {
             ++failed;
             failureLog += L"- " + title + L" (download): " + download.detail + L"\r\n";
@@ -474,7 +544,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         }
 
         notify(Phase::Installing, L"Installing...");
-        const StepOutcome install = installOne(session.get(), update.get(), title);
+        const StepOutcome install = installOne(session.get(), update.get(), updates.get(), i, title);
         if (!install.ok) {
             ++failed;
             failureLog += L"- " + title + L" (install): " + install.detail + L"\r\n";

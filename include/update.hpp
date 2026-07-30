@@ -44,13 +44,13 @@ public:
     void setProgressCallback(ProgressCallback callback);
     Result runCycle();
 
-private:
     struct StepOutcome {
         bool ok = false;
         bool rebootRequired = false;
         std::wstring detail;
     };
 
+private:
     StatusCallback statusCallback_;
     LogCallback logCallback_;
     ProgressCallback progressCallback_;

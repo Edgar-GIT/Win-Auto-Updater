@@ -12,7 +12,6 @@
 #include <wuapi.h>
 #include <windows.h>
 
-#include <algorithm>
 #include <chrono>
 #include <string>
 #include <thread>

@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 class App {
 public:
@@ -51,7 +52,8 @@ private:
     std::atomic<bool> finished_{false};
     std::atomic<bool> allowClose_{false};
     std::wstring lastStatus_ = L"Starting...";
-    bool hasProgressLine_ = false;
+    std::atomic<bool> hasProgressLine_{false};
+    std::thread workerThread_;
 
     static constexpr int kMaxRebootCount = 5;
 

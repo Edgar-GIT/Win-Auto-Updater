@@ -66,14 +66,19 @@ int App::run() {
     }
 
     const auto tempDir = StateManager::baseDir();
-    std::error_code ec;
-    std::filesystem::create_directories(tempDir, ec);
-    appendLog(L"Creating temporary directory...");
-    appendLog(tempDir.wstring());
-    if (ec) {
-        appendLog(L"FAILED: " + std::wstring(ec.message().begin(), ec.message().end()));
+    if (tempDir.empty()) {
+        appendLog(L"Creating temporary directory...");
+        appendLog(L"FAILED: Cannot determine temporary directory path.");
     } else {
-        appendLog(L"OK");
+        std::error_code ec;
+        std::filesystem::create_directories(tempDir, ec);
+        appendLog(L"Creating temporary directory...");
+        appendLog(tempDir.wstring());
+        if (ec) {
+            appendLog(L"FAILED: " + std::wstring(ec.message().begin(), ec.message().end()));
+        } else {
+            appendLog(L"OK");
+        }
     }
 
     const auto logPath = tempDir / L"updater.log";
@@ -111,12 +116,16 @@ int App::run() {
         }
     });
 
-    std::thread([this] { worker(); }).detach();
+    workerThread_ = std::thread([this] { worker(); });
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+
+    if (workerThread_.joinable()) {
+        workerThread_.join();
     }
 
     if (font_) {
@@ -505,7 +514,6 @@ void App::worker() {
 }
 
 void App::finishSuccess() {
-    logSummary(L"Success");
     finished_ = true;
     allowClose_ = true;
     setStatus(L"This computer is ready.");
@@ -554,7 +562,6 @@ void App::finishError(const std::wstring& message) {
 void App::logSummary(const std::wstring& result) {
     const auto add = [this](const std::wstring& line) {
         logger_.log(line);
-        appendLog(line);
     };
     add(L"");
     add(L"===== Single Update =====");
@@ -574,7 +581,7 @@ void App::logSummary(const std::wstring& result) {
 void App::requestReboot() {
     logger_.status(L"Restarting...");
     logger_.log(L"Requesting system restart in 15 seconds...");
-    Sleep(1500);
+    Sleep(15000);
 
     if (Restart::now()) {
         logger_.log(L"Restart command sent.");

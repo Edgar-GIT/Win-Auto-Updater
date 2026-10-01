@@ -64,7 +64,9 @@ Scheduler::Scheduler(std::filesystem::path executable)
     : executable_(std::move(executable)) {}
 
 bool Scheduler::exists() const {
-    ComInitializer com;
+    // Match the worker thread apartment (MTA). STA here causes RPC_E_CHANGED_MODE
+    // when COM was already initialized as multithreaded by the update engine.
+    ComInitializer com(COINIT_MULTITHREADED);
     if (!com.ok()) {
         return false;
     }
@@ -86,7 +88,7 @@ bool Scheduler::exists() const {
 }
 
 bool Scheduler::remove() const {
-    ComInitializer com;
+    ComInitializer com(COINIT_MULTITHREADED);
     if (!com.ok()) {
         return false;
     }
@@ -107,7 +109,7 @@ bool Scheduler::remove() const {
 }
 
 bool Scheduler::create() const {
-    ComInitializer com;
+    ComInitializer com(COINIT_MULTITHREADED);
     if (!com.ok()) {
         return false;
     }

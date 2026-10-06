@@ -65,6 +65,7 @@ target_link_libraries(SingleUpdate PRIVATE
     user32
     gdi32
     version
+    secur32
 )
 
 set_target_properties(SingleUpdate PROPERTIES

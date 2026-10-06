@@ -30,8 +30,10 @@ DEFINE_GUID(IID_IInstallationProgressChangedCallback, 0xe01402d5, 0xf8da, 0x43ba
 DEFINE_GUID(IID_IInstallationCompletedCallback, 0x45f4f6f3, 0xd602, 0x4f98, 0x9a, 0x8a, 0x3e,
             0xfa, 0x15, 0x2a, 0xd2, 0xd3);
 
-DEFINE_GUID(CLSID_UpdateCollection, 0x07f7438c, 0x7709, 0x4ca5, 0xb5, 0x18, 0x91, 0x27, 0x92,
-            0x88, 0x13, 0x4e);
+// Coclass GUID (NOT the interface IID 07F7438C-...). Using the IID as CLSID was
+// causing CoCreateInstance to fail every time, then falling back to Copy().
+DEFINE_GUID(CLSID_UpdateCollection, 0x13639463, 0x00db, 0x4646, 0x80, 0x3d, 0x52, 0x80, 0x26,
+            0x14, 0x0d, 0x88);
 
 // Shared IUnknown + Invoke layout for all four WUA callback interfaces.
 typedef struct {
@@ -97,15 +99,6 @@ long collectionCount(IUpdateCollection* collection) {
         return 0;
     }
     return count;
-}
-
-std::wstring toLower(std::wstring value) {
-    for (wchar_t& c : value) {
-        if (c >= L'A' && c <= L'Z') {
-            c = static_cast<wchar_t>(c - L'A' + L'a');
-        }
-    }
-    return value;
 }
 
 std::wstring updateTitle(IUpdate* update) {
@@ -198,7 +191,16 @@ bool acceptEula(IUpdate* update) {
     return SUCCEEDED(update->AcceptEula());
 }
 
-bool isDefenderRelatedUpdate(std::wstring_view title) {
+std::wstring toLower(std::wstring value) {
+    for (wchar_t& c : value) {
+        if (c >= L'A' && c <= L'Z') {
+            c = static_cast<wchar_t>(c - L'A' + L'a');
+        }
+    }
+    return value;
+}
+
+bool titleLooksLikeDefender(std::wstring_view title) {
     const std::wstring lower = toLower(std::wstring(title));
     static const wchar_t* patterns[] = {
         L"definition update",
@@ -210,6 +212,8 @@ bool isDefenderRelatedUpdate(std::wstring_view title) {
         L"virus definition",
         L"platform update for microsoft defender",
         L"smartscreen",
+        L"windows defender antivirus",
+        L"microsoft defender antivirus",
     };
     for (const wchar_t* pattern : patterns) {
         if (lower.find(pattern) != std::wstring::npos) {
@@ -217,6 +221,58 @@ bool isDefenderRelatedUpdate(std::wstring_view title) {
         }
     }
     return false;
+}
+
+bool categoryLooksLikeDefender(IUpdate* update) {
+    if (!update) {
+        return false;
+    }
+
+    ComPtr<ICategoryCollection> categories;
+    if (FAILED(update->get_Categories(categories.put())) || !categories) {
+        return false;
+    }
+
+    LONG count = 0;
+    if (FAILED(categories->get_Count(&count)) || count <= 0) {
+        return false;
+    }
+
+    for (LONG i = 0; i < count; ++i) {
+        ComPtr<ICategory> category;
+        if (FAILED(categories->get_Item(i, category.put())) || !category) {
+            continue;
+        }
+
+        BStr name;
+        if (SUCCEEDED(category->get_Name(name.put())) && name) {
+            const std::wstring lower = toLower(name.get());
+            if (lower.find(L"definition") != std::wstring::npos ||
+                lower.find(L"defender") != std::wstring::npos ||
+                lower.find(L"antivirus") != std::wstring::npos ||
+                lower.find(L"anti-virus") != std::wstring::npos) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Defender/antivirus definitions are managed by Windows Security itself and often
+// fail or conflict when forced through WUA — skip them deliberately.
+bool isDefenderRelatedUpdate(IUpdate* update, std::wstring_view title) {
+    return titleLooksLikeDefender(title) || categoryLooksLikeDefender(update);
+}
+
+bool updateAlreadyDownloaded(IUpdate* update) {
+    if (!update) {
+        return false;
+    }
+    VARIANT_BOOL downloaded = VARIANT_FALSE;
+    if (FAILED(update->get_IsDownloaded(&downloaded))) {
+        return false;
+    }
+    return downloaded == VARIANT_TRUE;
 }
 
 bool resultNeedsReboot(IInstallationResult* result) {
@@ -701,11 +757,25 @@ ComPtr<IUpdateCollection> UpdateEngine::makeSingleCollection(IUpdate* update) co
     ComPtr<IUpdateCollection> collection;
 
     log(L"Creating UpdateCollection...");
-    HRESULT hr = CoCreateInstance(CLSID_UpdateCollection, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_IUpdateCollection, reinterpret_cast<void**>(collection.put()));
-    log(L"CoCreateInstance HRESULT = " + formatError(hr));
+    HRESULT hr = E_FAIL;
+
+    // Prefer ProgID — matches Microsoft scripting samples and avoids CLSID/IID mixups.
+    CLSID progIdClsid{};
+    if (SUCCEEDED(CLSIDFromProgID(L"Microsoft.Update.UpdateColl", &progIdClsid))) {
+        hr = CoCreateInstance(progIdClsid, nullptr, CLSCTX_INPROC_SERVER, IID_IUpdateCollection,
+                              reinterpret_cast<void**>(collection.put()));
+        log(L"CoCreateInstance(ProgID Microsoft.Update.UpdateColl) HRESULT = " + formatError(hr));
+    }
+
     if (FAILED(hr) || !collection) {
-        log(L"  FAILED: CoCreateInstance for IUpdateCollection.");
+        collection.reset();
+        hr = CoCreateInstance(CLSID_UpdateCollection, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_IUpdateCollection, reinterpret_cast<void**>(collection.put()));
+        log(L"CoCreateInstance(CLSID_UpdateCollection) HRESULT = " + formatError(hr));
+    }
+
+    if (FAILED(hr) || !collection) {
+        log(L"  FAILED: could not create IUpdateCollection.");
         return {};
     }
     if (!update) {
@@ -804,6 +874,13 @@ UpdateEngine::StepOutcome UpdateEngine::downloadOne(IUpdateSession* session, IUp
                                                     LONG updateIndex,
                                                     std::wstring_view title) const {
     StepOutcome outcome;
+
+    if (updateAlreadyDownloaded(update)) {
+        log(L"Already downloaded, skipping download step: " + std::wstring(title));
+        progress(title, 100);
+        outcome.ok = true;
+        return outcome;
+    }
 
     ComPtr<IUpdateCollection> collection = makeSingleCollection(update);
     if (!collection) {
@@ -989,9 +1066,9 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
             const std::wstring title = updateTitle(update.get());
 
-            if (isDefenderRelatedUpdate(title)) {
-                notify(Phase::Downloading, L"Skipping Defender definition update...");
-                log(L"Skipped (Windows Defender manages this separately): " + title);
+            if (isDefenderRelatedUpdate(update.get(), title)) {
+                notify(Phase::Downloading, L"Skipping Defender/antivirus update...");
+                log(L"Skipped (managed by Windows Security / Defender): " + title);
                 ++skipped;
                 continue;
             }
@@ -1063,9 +1140,10 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             return result;
         }
 
+        // Only Defender/antivirus updates were left — treat as done.
         if (skipped > 0 && failed == 0) {
             notify(Phase::UpToDate, L"This computer is up to date.");
-            log(L"Remaining updates are handled by Windows Defender.");
+            log(L"Remaining updates are Defender/antivirus definitions (skipped).");
             result.success = true;
             result.upToDate = true;
             return result;

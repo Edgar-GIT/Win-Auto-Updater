@@ -64,6 +64,19 @@ bool postText(HWND hwnd, UINT msg, std::wstring_view text) {
     return true;
 }
 
+unsigned long long nowMs() {
+    return GetTickCount64();
+}
+
+std::wstring sanitizeLogLine(std::wstring message) {
+    for (wchar_t& c : message) {
+        if (c == L'\r' || c == L'\n') {
+            c = L' ';
+        }
+    }
+    return message;
+}
+
 }  // namespace
 
 App::App(HINSTANCE instance) : instance_(instance) {}
@@ -73,12 +86,33 @@ int App::run() {
         return 0;
     }
 
+    HANDLE singleInstance =
+        CreateMutexW(nullptr, TRUE, L"Local\\WinAutoUpdaterSingleInstanceMutex");
+    if (!singleInstance) {
+        MessageBoxW(nullptr, L"Failed to create the single-instance lock.", L"Win Auto Updater",
+                    MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(singleInstance);
+        return 0;
+    }
+
+    const auto releaseSingleInstance = [&]() {
+        if (singleInstance) {
+            ReleaseMutex(singleInstance);
+            CloseHandle(singleInstance);
+            singleInstance = nullptr;
+        }
+    };
+
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&icc);
 
     if (!createUi()) {
         MessageBoxW(nullptr, L"Failed to create the application window.", L"Win Auto Updater",
                     MB_OK | MB_ICONERROR);
+        releaseSingleInstance();
         return 1;
     }
 
@@ -101,7 +135,9 @@ int App::run() {
     appendLog(L"Log file: " + logPath.wstring() + (logFile_.is_open() ? L" (OK)" : L" (FAILED)"));
 
     logger_.setStatusSink([this](std::wstring_view message) {
-        postText(hwnd_, WM_APP_STATUS, message);
+        if (!uiDoneMode_) {
+            postText(hwnd_, WM_APP_STATUS, message);
+        }
     });
 
     logger_.setLogSink([this](std::wstring_view message) {
@@ -109,12 +145,13 @@ int App::run() {
             logFile_ << message << L"\n";
             logFile_.flush();
         }
-        postText(hwnd_, WM_APP_LOG, message);
+        if (!uiDoneMode_) {
+            postText(hwnd_, WM_APP_LOG, message);
+        }
     });
 
-    logger_.setProgressSink([this](std::wstring_view message) {
-        postText(hwnd_, WM_APP_PROGRESS, message);
-    });
+    // Progress sink is unused — progress goes only to the bar/label via postProgress.
+    logger_.setProgressSink([](std::wstring_view) {});
 
     workerThread_ = std::thread([this] {
         try {
@@ -160,6 +197,7 @@ int App::run() {
         DeleteObject(headerBrush_);
     }
 
+    releaseSingleInstance();
     return static_cast<int>(msg.wParam);
 }
 
@@ -279,6 +317,12 @@ bool App::createUi() {
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_TERMINAL)), instance_,
         nullptr);
+    // Raise the default ~32K limit so long sessions don't corrupt the control.
+    SendMessageW(terminal_, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
+
+    summaryLabel_ = CreateWindowExW(
+        0, L"STATIC", L"", WS_CHILD | SS_LEFT,
+        0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     uninstallButton_ = CreateWindowExW(
         0, L"BUTTON", L"Uninstall tool", WS_CHILD | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd_,
@@ -302,6 +346,9 @@ bool App::createUi() {
     }
     if (terminal_ && terminalFont_) {
         SendMessageW(terminal_, WM_SETFONT, reinterpret_cast<WPARAM>(terminalFont_), TRUE);
+    }
+    if (summaryLabel_ && uiFont_) {
+        SendMessageW(summaryLabel_, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
     }
     if (uninstallButton_ && smallFont_) {
         SendMessageW(uninstallButton_, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont_), TRUE);
@@ -328,8 +375,34 @@ void App::layoutControls() {
     GetClientRect(hwnd_, &rc);
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
-    const int margin = 20;
+    const int margin = 24;
     const int contentW = width - margin * 2;
+    const int buttonArea = 64;
+    const int buttonY = height - margin - kButtonHeight;
+    const int gap = 14;
+    const int totalButtons = kButtonWidth * 2 + gap;
+    const int startX = (width - totalButtons) / 2;
+
+    if (uiDoneMode_) {
+        if (titleLabel_) {
+            MoveWindow(titleLabel_, margin, 28, contentW, 32, TRUE);
+        }
+        if (phaseLabel_) {
+            MoveWindow(phaseLabel_, margin, 78, contentW, 28, TRUE);
+        }
+        if (summaryLabel_) {
+            MoveWindow(summaryLabel_, margin, 120, contentW, height - 120 - buttonArea - margin,
+                       TRUE);
+        }
+        if (uninstallButton_) {
+            MoveWindow(uninstallButton_, startX, buttonY, kButtonWidth, kButtonHeight, TRUE);
+        }
+        if (closeButton_) {
+            MoveWindow(closeButton_, startX + kButtonWidth + gap, buttonY, kButtonWidth,
+                       kButtonHeight, TRUE);
+        }
+        return;
+    }
 
     if (titleLabel_) {
         MoveWindow(titleLabel_, margin, 16, contentW, 32, TRUE);
@@ -347,17 +420,12 @@ void App::layoutControls() {
         MoveWindow(statsLabel_, margin, 142, contentW, 20, TRUE);
     }
 
-    const int buttonArea = 56;
     const int terminalTop = 172;
     const int terminalHeight = height - terminalTop - buttonArea - margin;
     if (terminal_ && terminalHeight > 40) {
         MoveWindow(terminal_, margin, terminalTop, contentW, terminalHeight, TRUE);
     }
 
-    const int buttonY = height - margin - kButtonHeight;
-    const int gap = 12;
-    const int totalButtons = kButtonWidth * 2 + gap;
-    const int startX = (width - totalButtons) / 2;
     if (uninstallButton_) {
         MoveWindow(uninstallButton_, startX, buttonY, kButtonWidth, kButtonHeight, TRUE);
     }
@@ -381,14 +449,14 @@ void App::setPhase(std::wstring message) {
 
 void App::setCurrent(std::wstring message) {
     lastCurrent_ = std::move(message);
-    if (currentLabel_) {
+    if (currentLabel_ && !uiDoneMode_) {
         SetWindowTextW(currentLabel_, lastCurrent_.c_str());
     }
 }
 
 void App::setStats(std::wstring message) {
     lastStats_ = std::move(message);
-    if (statsLabel_) {
+    if (statsLabel_ && !uiDoneMode_) {
         SetWindowTextW(statsLabel_, lastStats_.c_str());
     }
 }
@@ -401,7 +469,7 @@ void App::setProgressPercent(int percent) {
         percent = 100;
     }
     lastPercent_ = percent;
-    if (progressBar_) {
+    if (progressBar_ && !uiDoneMode_) {
         SendMessageW(progressBar_, PBM_SETPOS, percent, 0);
     }
 }
@@ -424,12 +492,36 @@ void App::showActionButtons(bool enabled) {
     }
 }
 
-void App::appendLog(std::wstring message) {
+void App::trimTerminalIfNeeded() {
     if (!terminal_) {
         return;
     }
 
-    hasProgressLine_ = false;
+    const int length = GetWindowTextLengthW(terminal_);
+    if (length < kMaxTerminalChars) {
+        return;
+    }
+
+    // Keep roughly the second half so the control never hits the old 32K corruption zone.
+    const int keepFrom = length / 2;
+    const int lineIndex =
+        static_cast<int>(SendMessageW(terminal_, EM_LINEFROMCHAR, keepFrom, 0));
+    int cut = static_cast<int>(SendMessageW(terminal_, EM_LINEINDEX, lineIndex, 0));
+    if (cut < 0) {
+        cut = keepFrom;
+    }
+
+    SendMessageW(terminal_, EM_SETSEL, 0, cut);
+    SendMessageW(terminal_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L""));
+}
+
+void App::appendLog(std::wstring message) {
+    if (!terminal_ || uiDoneMode_) {
+        return;
+    }
+
+    message = sanitizeLogLine(std::move(message));
+    trimTerminalIfNeeded();
 
     const int length = GetWindowTextLengthW(terminal_);
     std::wstring line = std::move(message);
@@ -442,54 +534,106 @@ void App::appendLog(std::wstring message) {
     SendMessageW(terminal_, EM_SCROLLCARET, 0, 0);
 }
 
-void App::updateProgressLine(std::wstring message) {
-    if (!terminal_) {
+bool App::shouldPostProgress(int percent) const {
+    if (uiDoneMode_) {
+        return false;
+    }
+    const auto now = nowMs();
+    const auto lastMs = lastProgressPostMs_.load();
+    const int lastPct = lastPostedPercent_.load();
+    if (percent == 100 || percent == 0) {
+        return true;
+    }
+    if (percent == lastPct && (now - lastMs) < 400) {
+        return false;
+    }
+    if ((now - lastMs) < 250 && percent != 100) {
+        return false;
+    }
+    return true;
+}
+
+void App::postProgress(int percent, std::wstring_view title) {
+    if (!shouldPostProgress(percent)) {
         return;
     }
+    lastPostedPercent_ = percent;
+    lastProgressPostMs_ = nowMs();
 
-    const int length = GetWindowTextLengthW(terminal_);
-    if (!hasProgressLine_ || length == 0) {
-        appendLog(std::move(message));
-        hasProgressLine_ = true;
-        return;
+    auto* pct = new int(percent);
+    auto* titleCopy = heapCopy(title);
+    if (!PostMessageW(hwnd_, WM_APP_PROGRESS, reinterpret_cast<WPARAM>(pct),
+                      reinterpret_cast<LPARAM>(titleCopy))) {
+        delete pct;
+        delete titleCopy;
+    }
+}
+
+void App::showFinishedScreen(bool success, const std::wstring& detail) {
+    uiDoneMode_ = true;
+    finished_ = true;
+    allowClose_ = true;
+
+    if (terminal_) {
+        ShowWindow(terminal_, SW_HIDE);
+    }
+    if (progressBar_) {
+        ShowWindow(progressBar_, SW_HIDE);
+    }
+    if (statsLabel_) {
+        ShowWindow(statsLabel_, SW_HIDE);
+    }
+    if (currentLabel_) {
+        ShowWindow(currentLabel_, SW_HIDE);
     }
 
-    const int lineCount = static_cast<int>(SendMessageW(terminal_, EM_GETLINECOUNT, 0, 0));
-    if (lineCount < 1) {
-        appendLog(std::move(message));
-        hasProgressLine_ = true;
-        return;
+    setPhase(success ? L"Finished — this computer is ready"
+                     : L"Stopped — an error occurred");
+
+    std::wstring summary;
+    if (success) {
+        summary =
+            L"All available Windows updates have been installed.\r\n\r\n"
+            L"Installed: " +
+            std::to_wstring(totalUpdatesInstalled_) + L"\r\nFailed: " +
+            std::to_wstring(totalUpdatesFailed_) +
+            L"\r\n\r\n"
+            L"Reminder: update Microsoft Defender / antivirus definitions manually in "
+            L"Windows Security if needed.\r\n\r\n"
+            L"You can close this window, or uninstall this tool.";
+    } else {
+        summary = detail.empty() ? L"An error occurred during the update process." : detail;
+        summary +=
+            L"\r\n\r\nReminder: update Microsoft Defender / antivirus definitions manually in "
+            L"Windows Security if needed.";
     }
 
-    const int lineIndex = lineCount - 1;
-    const int lineStart = static_cast<int>(SendMessageW(terminal_, EM_LINEINDEX, lineIndex, 0));
-    if (lineStart < 0) {
-        appendLog(std::move(message));
-        hasProgressLine_ = true;
-        return;
+    if (summaryLabel_) {
+        SetWindowTextW(summaryLabel_, summary.c_str());
+        ShowWindow(summaryLabel_, SW_SHOW);
     }
 
-    SendMessageW(terminal_, EM_SETSEL, lineStart, length);
-    SendMessageW(terminal_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(message.c_str()));
-    SendMessageW(terminal_, EM_SCROLLCARET, 0, 0);
-    hasProgressLine_ = true;
+    showActionButtons(true);
+    layoutControls();
+    InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
 void App::performUninstall() {
+    MessageBoxW(
+        hwnd_,
+        L"Before uninstalling, remember to update Microsoft Defender / antivirus "
+        L"definitions manually in Windows Security.\r\n\r\n"
+        L"Click OK to continue uninstalling this tool.",
+        L"Win Auto Updater", MB_OK | MB_ICONINFORMATION);
+
     const auto exe = currentExecutable();
 
-    appendLog(L"Uninstalling Win Auto Updater...");
-
     Scheduler scheduler(exe);
-    const bool taskRemoved = scheduler.remove();
-    appendLog(taskRemoved ? L"Scheduled resume task removed." : L"No scheduled task was found.");
+    scheduler.remove();
 
     StateManager stateManager;
     stateManager.remove();
-    appendLog(L"State file removed.");
-
     Cleanup::removeTempFiles();
-    appendLog(L"Temporary files removed.");
 
     if (uninstallButton_) {
         EnableWindow(uninstallButton_, FALSE);
@@ -498,12 +642,23 @@ void App::performUninstall() {
 
     if (!exe.empty()) {
         MoveFileExW(exe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
-        appendLog(L"Executable will be removed on the next restart.");
+    }
+
+    if (summaryLabel_) {
+        SetWindowTextW(summaryLabel_,
+                       L"Win Auto Updater has been uninstalled.\r\n\r\n"
+                       L"The executable will be removed on the next restart.\r\n\r\n"
+                       L"Remember to keep Microsoft Defender / antivirus definitions up to date.");
     }
 
     allowClose_ = true;
     running_ = false;
-    DestroyWindow(hwnd_);
+
+    // Leave the window open with Close enabled so the user sees the confirmation.
+    if (closeButton_) {
+        EnableWindow(closeButton_, TRUE);
+        ShowWindow(closeButton_, SW_SHOW);
+    }
 }
 
 void App::worker() {
@@ -551,18 +706,24 @@ void App::worker() {
         logger_.log(L"Fresh start.");
     }
 
-    if (!isContinuation) {
-        logger_.status(L"Preparing automatic resume...");
-        logger_.log(L"Creating scheduled task for reboot resume...");
-        postText(hwnd_, WM_APP_CURRENT, L"Creating scheduled task so updates can continue after restart...");
+    logger_.status(L"Preparing automatic resume...");
+    logger_.log(L"Registering automatic resume after reboot (Task Scheduler + RunOnce)...");
+    postText(hwnd_, WM_APP_CURRENT,
+             L"Registering automatic resume so the updater reopens after restart...");
+    {
         Scheduler scheduler(exe);
-        if (!scheduler.create()) {
+        std::wstring scheduleError;
+        if (!scheduler.create(&scheduleError)) {
             postText(hwnd_, WM_APP_ERROR,
-                     L"Failed to create the scheduled task.\r\n\r\n"
-                     L"Without it, the updater cannot resume after a reboot.");
+                     L"Failed to create the automatic resume registration.\r\n\r\n" +
+                         scheduleError +
+                         L"\r\n\r\nWithout it, the updater cannot reopen after a reboot.");
             return;
         }
-        logger_.log(L"Scheduled task ready.");
+        if (!scheduleError.empty()) {
+            logger_.log(L"Resume registration note: " + scheduleError);
+        }
+        logger_.log(L"Automatic resume is ready (scheduled task and/or RunOnce).");
     }
 
     UpdateEngine engine;
@@ -607,24 +768,32 @@ void App::worker() {
 
     engine.setProgressCallback([this](std::wstring_view title, int percent) {
         const int clamped = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
-        logger_.status(L"Working... " + std::to_wstring(clamped) + L"%");
-        postText(hwnd_, WM_APP_CURRENT, std::wstring(title));
-        auto* pct = new int(clamped);
-        auto* line = heapCopy(std::wstring(title) + L"  [" + std::to_wstring(clamped) + L"%]");
-        if (!PostMessageW(hwnd_, WM_APP_PROGRESS, reinterpret_cast<WPARAM>(pct),
-                          reinterpret_cast<LPARAM>(line))) {
-            delete pct;
-            delete line;
-        }
+        postProgress(clamped, title);
     });
+
+    int consecutiveFailures = 0;
+    constexpr int kMaxConsecutiveFailures = 3;
 
     while (running_) {
         const auto cycle = engine.runCycle();
         if (!cycle.success) {
+            ++consecutiveFailures;
+            logger_.log(L"Update cycle failed (" + std::to_wstring(consecutiveFailures) + L"/" +
+                        std::to_wstring(kMaxConsecutiveFailures) + L"): " +
+                        (cycle.message.empty() ? L"unknown error" : cycle.message));
+            if (consecutiveFailures < kMaxConsecutiveFailures) {
+                logger_.status(L"Retrying after a temporary failure...");
+                postText(hwnd_, WM_APP_CURRENT,
+                         L"Temporary failure — retrying in a few seconds...");
+                Sleep(5000);
+                continue;
+            }
             postText(hwnd_, WM_APP_ERROR,
                      cycle.message.empty() ? L"Update cycle failed." : cycle.message);
             return;
         }
+
+        consecutiveFailures = 0;
 
         totalUpdatesFound_ += cycle.updatesFound;
         totalUpdatesInstalled_ += cycle.updatesInstalled;
@@ -665,6 +834,20 @@ void App::worker() {
             state.phase = L"waiting_reboot";
             state.rebootCount = newRebootCount;
             stateManager.save(state);
+
+            {
+                Scheduler scheduler(exe);
+                std::wstring scheduleError;
+                if (!scheduler.create(&scheduleError)) {
+                    logger_.log(L"WARNING: failed to refresh resume registration before reboot: " +
+                                scheduleError);
+                } else if (!scheduleError.empty()) {
+                    logger_.log(L"Resume refresh note: " + scheduleError);
+                } else {
+                    logger_.log(L"Resume registration refreshed before reboot.");
+                }
+            }
+
             PostMessageW(hwnd_, WM_APP_REBOOT, 0, 0);
             return;
         }
@@ -676,38 +859,11 @@ void App::worker() {
 }
 
 void App::finishSuccess() {
-    finished_ = true;
-    allowClose_ = true;
-    setPhase(L"Finished — this computer is ready");
-    setCurrent(L"All available Windows updates have been installed.");
-    setProgressPercent(100);
-    appendLog(L"");
-    appendLog(L"All available updates have been installed.");
-    appendLog(L"The scheduled resume task has been removed automatically.");
-    appendLog(L"You can close this window, or uninstall the tool if you no longer need it.");
-    showActionButtons(true);
+    showFinishedScreen(true, L"");
 }
 
 void App::finishError(const std::wstring& message) {
-    allowClose_ = true;
-    setPhase(L"Stopped — an error occurred");
-    setCurrent(L"See the activity log below for details.");
-    for (size_t pos = 0; pos < message.size();) {
-        const size_t next = message.find(L'\r', pos);
-        const std::wstring line =
-            message.substr(pos, next == std::wstring::npos ? std::wstring::npos : next - pos);
-        if (!line.empty() && line != L"\n") {
-            appendLog(line);
-        }
-        if (next == std::wstring::npos) {
-            break;
-        }
-        pos = next + 1;
-        if (pos < message.size() && message[pos] == L'\n') {
-            ++pos;
-        }
-    }
-    showActionButtons(true);
+    showFinishedScreen(false, message);
 }
 
 void App::logSummary(const std::wstring& result) {
@@ -761,6 +917,9 @@ LRESULT CALLBACK App::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_SIZE:
+            layoutControls();
+            return 0;
         case WM_CTLCOLORSTATIC: {
             const auto child = reinterpret_cast<HWND>(lParam);
             HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -784,7 +943,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_COMMAND: {
             switch (LOWORD(wParam)) {
                 case IDC_UNINSTALL:
-                    if (finished_) {
+                    if (finished_ || allowClose_) {
                         performUninstall();
                     }
                     return 0;
@@ -800,15 +959,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_APP_STATUS: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             if (text) {
-                setStatus(*text);
-                delete text;
-            }
-            return 0;
-        }
-        case WM_APP_PHASE: {
-            auto* text = reinterpret_cast<std::wstring*>(lParam);
-            if (text) {
-                setPhase(*text);
+                if (!uiDoneMode_) {
+                    setStatus(*text);
+                }
                 delete text;
             }
             return 0;
@@ -816,7 +969,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_APP_CURRENT: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             if (text) {
-                setCurrent(*text);
+                if (!uiDoneMode_) {
+                    setCurrent(*text);
+                }
                 delete text;
             }
             return 0;
@@ -824,29 +979,37 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_APP_STATS: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             delete text;
-            refreshStatsLabel();
+            if (!uiDoneMode_) {
+                refreshStatsLabel();
+            }
             return 0;
         }
         case WM_APP_LOG: {
             auto* text = reinterpret_cast<std::wstring*>(lParam);
             if (text) {
-                appendLog(*text);
+                if (!uiDoneMode_) {
+                    appendLog(*text);
+                }
                 delete text;
             }
             return 0;
         }
         case WM_APP_PROGRESS: {
-            // wParam may carry percent pointer from progress callback; lParam is log line.
             auto* percentPtr = reinterpret_cast<int*>(wParam);
             auto* text = reinterpret_cast<std::wstring*>(lParam);
-            if (percentPtr) {
-                setProgressPercent(*percentPtr);
-                delete percentPtr;
+            if (!uiDoneMode_) {
+                if (percentPtr) {
+                    setProgressPercent(*percentPtr);
+                }
+                if (text) {
+                    // Progress belongs on the label/bar only — never rewrite terminal lines
+                    // (that was causing overlapping/garbled log text).
+                    setCurrent(*text + L"  [" +
+                               std::to_wstring(percentPtr ? *percentPtr : lastPercent_) + L"%]");
+                }
             }
-            if (text) {
-                updateProgressLine(*text);
-                delete text;
-            }
+            delete percentPtr;
+            delete text;
             return 0;
         }
         case WM_APP_DONE:
@@ -875,12 +1038,10 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         appendLog(L"Restart command sent.");
                         allowClose_ = true;
                     } else {
-                        allowClose_ = true;
-                        setPhase(L"Restart required — please reboot manually");
-                        setCurrent(L"Automatic restart failed. Restart Windows yourself to continue.");
-                        appendLog(L"Automatic restart failed. Please restart Windows manually.");
-                        appendLog(L"The scheduled task will resume Win Auto Updater after logon.");
-                        showActionButtons(true);
+                        showFinishedScreen(
+                            false,
+                            L"Automatic restart failed. Please restart Windows manually.\r\n\r\n"
+                            L"The scheduled task will resume Win Auto Updater after logon.");
                     }
                 }
             }
@@ -889,8 +1050,6 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (allowClose_) {
                 running_ = false;
                 DestroyWindow(hwnd_);
-            } else {
-                appendLog(L"Please wait — updates are still in progress. Closing is disabled until finished.");
             }
             return 0;
         case WM_DESTROY:

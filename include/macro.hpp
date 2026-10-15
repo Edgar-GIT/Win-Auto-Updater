@@ -65,6 +65,7 @@ private:
     HHOOK mouseHook_ = nullptr;
     HHOOK keyHook_ = nullptr;
     HWND notify_ = nullptr;
+    std::wstring ourProc_;
     bool active_ = false;
     std::vector<Event> events_;
 };

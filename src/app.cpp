@@ -144,6 +144,9 @@ int App::run() {
     // Write stress.ini and uia_stress.ps1 next to the executable so they can be
     // tuned on the target machine without a rebuild.
     Stress::ensureAssets(currentExecutable());
+    // Default the chooser's "auto stress" toggle to the AutoRunStress setting.
+    autoStressAfterUpdate_ = Stress::loadConfig(currentExecutable()).autoRunStress;
+    updateStressToggleText();
 
     const auto tempDir = StateManager::baseDir();
     if (tempDir.empty()) {
@@ -440,6 +443,14 @@ bool App::createUi() {
         0, L"BUTTON", L"Dump UI tree", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DUMP_UI)), instance_, nullptr);
 
+    recordButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Record macro", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RECORD_MACRO)), instance_, nullptr);
+
+    stressToggleButton_ = CreateWindowExW(
+        0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STRESS_TOGGLE)), instance_, nullptr);
+
     if (titleFont_) {
         SendMessageW(headerTitle_, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont_), TRUE);
     }
@@ -467,6 +478,8 @@ bool App::createUi() {
         SendMessageW(runTestsButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(closeReopenButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(dumpButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(recordButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(stressToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
     }
 
     // Buttons stay disabled until the run finishes so the window cannot be
@@ -507,8 +520,8 @@ void App::layoutControls() {
     const int contentW = width - margin * 2;
     const int gap = 14;
     const int buttonY = height - margin - kButtonHeight;
-    const int auxW = 190;
-    const int auxStartX = (width - (auxW * 3 + gap * 2)) / 2;
+    const int auxW = 165;
+    const int auxStartX = (width - (auxW * 4 + gap * 3)) / 2;
 
     if (headerTitle_) {
         MoveWindow(headerTitle_, margin + 58, 22, contentW - 130, 36, TRUE);
@@ -540,8 +553,11 @@ void App::layoutControls() {
         if (dumpButton_) {
             MoveWindow(dumpButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
         }
+        if (recordButton_) {
+            MoveWindow(recordButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
+        }
         if (closeButton_) {
-            MoveWindow(closeButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
+            MoveWindow(closeButton_, auxStartX + (auxW + gap) * 3, buttonY, auxW, kButtonHeight, TRUE);
         }
         return;
     }
@@ -572,12 +588,15 @@ void App::layoutControls() {
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
         }
-        if (closeButton_) {
-            MoveWindow(closeButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
+        if (recordButton_) {
+            MoveWindow(recordButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
         }
         if (closeReopenButton_) {
             MoveWindow(closeReopenButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW,
                        kButtonHeight, TRUE);
+        }
+        if (closeButton_) {
+            MoveWindow(closeButton_, auxStartX + (auxW + gap) * 3, buttonY, auxW, kButtonHeight, TRUE);
         }
         return;
     }
@@ -608,8 +627,11 @@ void App::layoutControls() {
     if (dumpButton_) {
         MoveWindow(dumpButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
     }
+    if (recordButton_) {
+        MoveWindow(recordButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
+    }
     if (closeButton_) {
-        MoveWindow(closeButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
+        MoveWindow(closeButton_, auxStartX + (auxW + gap) * 3, buttonY, auxW, kButtonHeight, TRUE);
     }
 }
 
@@ -938,6 +960,14 @@ void App::runStressTests() {
     if (stressRunning_ || dumping_) {
         return;
     }
+    if (recording_) {
+        // Stop silently: the user should have pressed F10 first; don't open files here.
+        recorder_.stop();
+        recording_ = false;
+        if (recordButton_) {
+            SetWindowTextW(recordButton_, L"Record macro");
+        }
+    }
     stressRunning_ = true;
     stressLog_.clear();
 
@@ -983,6 +1013,13 @@ void App::runUiDump() {
     if (dumping_ || stressRunning_) {
         return;
     }
+    if (recording_) {
+        recorder_.stop();
+        recording_ = false;
+        if (recordButton_) {
+            SetWindowTextW(recordButton_, L"Record macro");
+        }
+    }
     dumping_ = true;
     if (dumpButton_) {
         EnableWindow(dumpButton_, FALSE);
@@ -1001,6 +1038,81 @@ void App::runUiDump() {
         }
         PostMessageW(hwnd_, WM_APP_DUMP, ok ? 1 : 0, 0);
     });
+}
+
+void App::updateStressToggleText() {
+    if (stressToggleButton_) {
+        SetWindowTextW(stressToggleButton_,
+                       autoStressAfterUpdate_ ? L"After update: run stress tests"
+                                              : L"After update: stop");
+    }
+}
+
+void App::applyHint(const std::wstring& hint) {
+    if (uiDoneMode_) {
+        if (summaryLabel_) {
+            SetWindowTextW(summaryLabel_, (doneSummary_ + L"\r\n\r\n" + hint).c_str());
+        }
+    } else if (currentLabel_) {
+        SetWindowTextW(currentLabel_, hint.c_str());
+    }
+}
+
+void App::toggleRecording() {
+    if (recording_) {
+        finishRecording();
+        return;
+    }
+    if (stressRunning_ || dumping_) {
+        return;
+    }
+
+    recorder_.clear();
+    if (!recorder_.start(hwnd_)) {
+        MessageBoxW(hwnd_,
+                    L"Could not start recording: the input hooks were refused. "
+                    L"Is another tool blocking global hooks?",
+                    L"Win Auto Updater", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    recording_ = true;
+    if (recordButton_) {
+        SetWindowTextW(recordButton_, L"Stop (F10)");
+    }
+    applyHint(L"Recording macro: do every click and key you want replayed in powerMAX / "
+              L"MemTest / CrystalDiskMark, then press F10 to stop.");
+}
+
+void App::finishRecording() {
+    if (!recording_) {
+        return;
+    }
+    recorder_.stop();
+    recording_ = false;
+
+    if (recordButton_) {
+        SetWindowTextW(recordButton_, L"Record macro");
+    }
+
+    const auto events = recorder_.events();
+    if (events.empty()) {
+        applyHint(L"Recording stopped. Nothing was captured.");
+        MessageBoxW(hwnd_, L"Nothing was recorded.", L"Win Auto Updater", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const auto file = Macro::filePath(currentExecutable());
+    if (!Macro::save(file, events)) {
+        applyHint(L"Recording stopped. The macro file could not be written.");
+        MessageBoxW(hwnd_, L"Could not write the macro file next to the executable.",
+                    L"Win Auto Updater", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    applyHint(L"Macro saved: " + file.wstring() + L" (" + std::to_wstring(events.size()) +
+              L" steps). \"Run stress tests\" will replay it.");
+    ShellExecuteW(nullptr, L"open", file.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void App::closeAndReopen() {
@@ -1520,6 +1632,13 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 case IDC_UPDATE:
                     beginUpdate(false);
                     return 0;
+                case IDC_STRESS_TOGGLE:
+                    if (choosing_) {
+                        autoStressAfterUpdate_ = !autoStressAfterUpdate_;
+                        updateStressToggleText();
+                        InvalidateRect(stressToggleButton_, nullptr, TRUE);
+                    }
+                    return 0;
                 case IDC_UPDATE_NO_DRIVERS:
                     beginUpdate(true);
                     return 0;
@@ -1535,6 +1654,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 case IDC_DUMP_UI:
                     runUiDump();
+                    return 0;
+                case IDC_RECORD_MACRO:
+                    toggleRecording();
                     return 0;
                 case IDC_CLOSE_REOPEN:
                     if (allowClose_) {
@@ -1625,6 +1747,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
+        case Macro::kStopMessage:
+            finishRecording();
+            return 0;
         case WM_APP_PROGRESS: {
             auto* percentPtr = reinterpret_cast<int*>(wParam);
             auto* text = reinterpret_cast<std::wstring*>(lParam);

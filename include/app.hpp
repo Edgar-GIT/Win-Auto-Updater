@@ -8,6 +8,7 @@
 #endif
 
 #include "logger.hpp"
+#include "macro.hpp"
 #include "update.hpp"
 
 #include <windows.h>
@@ -66,6 +67,8 @@ private:
     HWND runTestsButton_ = nullptr;
     HWND closeReopenButton_ = nullptr;
     HWND dumpButton_ = nullptr;
+    HWND recordButton_ = nullptr;
+    HWND stressToggleButton_ = nullptr;
 
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -115,8 +118,13 @@ private:
     bool cleanupDone_ = false;
     bool choosing_ = true;
     bool updateWithoutDrivers_ = false;
+    // Chooser decision: run the stress bench automatically once the update ends.
+    bool autoStressAfterUpdate_ = true;
+    bool autoStressStarted_ = false;
     bool stressRunning_ = false;
     bool dumping_ = false;
+    bool recording_ = false;
+    Macro::Recorder recorder_;
     std::wstring executionType_;
     std::wstring postSummary_;
     std::wstring doneSummary_;
@@ -131,6 +139,10 @@ private:
     void runPostUpdateTasks();
     void runStressTests();
     void runUiDump();
+    void toggleRecording();
+    void finishRecording();
+    void applyHint(const std::wstring& hint);
+    void updateStressToggleText();
     void closeAndReopen();
     void setStatus(std::wstring message);
     void setPhase(std::wstring message);

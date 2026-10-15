@@ -21,6 +21,7 @@ add_executable(SingleUpdate WIN32
     src/driverpolicy.cpp
     src/drivers.cpp
     src/stress.cpp
+    src/macro.cpp
     resources/app.rc
 )
 

@@ -47,6 +47,15 @@ std::wstring titleOf(HWND window) {
     return buffer;
 }
 
+std::wstring ownProcessName() {
+    wchar_t buffer[MAX_PATH]{};
+    const DWORD n = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (n == 0) {
+        return {};
+    }
+    return std::filesystem::path(buffer).filename().wstring();
+}
+
 std::string toUtf8(const std::wstring& value) {
     if (value.empty()) {
         return {};
@@ -103,6 +112,22 @@ HWND findWindow(const std::wstring& proc, const std::wstring& cls, int timeoutMs
             return nullptr;
         }
         Sleep(200);
+    }
+}
+
+// SetForegroundWindow is often refused from a background thread, so attach our
+// thread input to the current foreground thread while activating the target.
+void activateWindow(HWND window) {
+    const DWORD current = GetCurrentThreadId();
+    const HWND foreground = GetForegroundWindow();
+    const DWORD other = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const bool attached = other != 0 && other != current &&
+                          AttachThreadInput(current, other, TRUE);
+    ShowWindow(window, SW_RESTORE);
+    BringWindowToTop(window);
+    SetForegroundWindow(window);
+    if (attached) {
+        AttachThreadInput(current, other, FALSE);
     }
 }
 
@@ -197,6 +222,7 @@ bool Recorder::start(HWND notify) {
     notify_ = notify;
     instance_ = this;
     events_.clear();
+    ourProc_ = ownProcessName();
     active_ = true;
     HINSTANCE module = GetModuleHandleW(nullptr);
     mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, mouseProc, module, 0);
@@ -256,9 +282,10 @@ void Recorder::handleMouse(WPARAM message, const MSLLHOOKSTRUCT& info) {
     event.kind = Event::Kind::Click;
     event.right = message == WM_RBUTTONDOWN;
     captureTarget(info.pt, &event);
-    if (!event.proc.empty()) {
-        events_.push_back(event);
+    if (event.proc.empty() || _wcsicmp(event.proc.c_str(), ourProc_.c_str()) == 0) {
+        return;
     }
+    events_.push_back(event);
 }
 
 void Recorder::handleKey(WPARAM message, const KBDLLHOOKSTRUCT& info) {
@@ -290,6 +317,9 @@ void Recorder::handleKey(WPARAM message, const KBDLLHOOKSTRUCT& info) {
         event.proc = processBaseName(root);
         event.cls = classNameOf(root);
         event.title = titleOf(root);
+    }
+    if (event.proc.empty() || _wcsicmp(event.proc.c_str(), ourProc_.c_str()) == 0) {
+        return;
     }
     events_.push_back(event);
 }
@@ -328,9 +358,7 @@ void play(const std::vector<Event>& events, const std::function<void(const std::
             return;
         }
         if (GetForegroundWindow() != window) {
-            ShowWindow(window, SW_RESTORE);
-            SetForegroundWindow(window);
-            BringWindowToTop(window);
+            activateWindow(window);
             Sleep(250);
         }
         if (event.kind == Event::Kind::Click) {

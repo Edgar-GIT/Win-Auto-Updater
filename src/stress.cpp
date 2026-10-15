@@ -420,7 +420,8 @@ Config loadConfig(const std::filesystem::path& executable) {
             out << L"PowerMax=1\n";
             out << L"CrystalDiskMark=0\n";
             out << L"RunGuiAutomation=1\n";
-            out << L"UseMacro=1\n\n";
+            out << L"UseMacro=1\n";
+            out << L"AutoRunStress=1\n\n";
             out << L"[UIA]\n";
             out << L"; UI Automation settings for GUI-only tools.\n";
             out << L"; Buttons are matched (case-insensitive, substring) against the names\n";
@@ -494,6 +495,7 @@ Config loadConfig(const std::filesystem::path& executable) {
         else if (key == L"crystaldiskmark") config.crystalDiskMarkGui = parseBool(value, config.crystalDiskMarkGui);
         else if (key == L"runguiautomation") config.runGuiAutomation = parseBool(value, config.runGuiAutomation);
         else if (key == L"usemacro") config.useMacro = parseBool(value, config.useMacro);
+        else if (key == L"autorunstress") config.autoRunStress = parseBool(value, config.autoRunStress);
     }
     return config;
 }
@@ -638,24 +640,63 @@ Result run(const Config& config, const Callbacks& callbacks) {
     }
 
     if (config.runGuiAutomation && !guiOnly.empty()) {
-        status(L"Automating powerMAX / MemTest / CrystalDiskMark...");
         const auto exe = currentExecutable();
-        const auto script = ensureUiScript(exe);
-        const auto ini = configPath(exe);
-        const auto outDir = tempDir();
-        std::filesystem::create_directories(outDir, ec);
-        const auto psLog = outDir / L"uia_stress.log";
-        const std::wstring psArgs =
-            L"-NoProfile -ExecutionPolicy Bypass -File " + quote(script.wstring()) +
-            L" -Mode run -Base " + quote(base.wstring()) + L" -Ini " + quote(ini.wstring()) +
-            L" -Only " + quote(guiOnly);
-        // Redirect stdout+stderr into the log so any PowerShell error is captured.
-        if (launchProcess(L"powershell.exe", psArgs, {}, true, false, psLog)) {
-            log(L"UI Automation helper started (log: " + psLog.wstring() + L").");
-            ++result.launched;
+        const auto macroFile = Macro::filePath(exe);
+
+        std::vector<Macro::Event> macro;
+        if (config.useMacro && std::filesystem::exists(macroFile, ec) &&
+            Macro::load(macroFile, &macro) && !macro.empty()) {
+            // Launch the GUI-only tools first, then replay the recorded clicks.
+            status(L"Launching tools and replaying recorded macro...");
+            const auto launchGui = [&](const std::wstring& label, const std::wstring& relative,
+                                       int instances) {
+                const std::filesystem::path tool = base / relative;
+                if (!std::filesystem::exists(tool, ec)) {
+                    log(L"Missing " + label + L": " + tool.wstring() + L" (macro will wait for it)");
+                    return;
+                }
+                for (int i = 0; i < std::max(1, instances); ++i) {
+                    if (launchProcess(tool.wstring(), L"", tool.parent_path(), false, false)) {
+                        log(L"Launched " + label + L": " + tool.wstring());
+                        ++result.launched;
+                    } else {
+                        log(L"Failed to launch " + label + L": " + tool.wstring());
+                        ++result.failed;
+                    }
+                }
+            };
+            if (config.powerMax) {
+                launchGui(L"powerMAX", config.powerMaxExe, config.powerMaxInstances);
+            }
+            if (config.memTest) {
+                launchGui(L"MemTest", config.memTestExe, config.memTestInstances);
+            }
+            if (config.crystalDiskMarkGui) {
+                launchGui(L"CrystalDiskMark", config.cdmExe, config.cdmInstances);
+            }
+            log(L"Replaying macro (" + std::to_wstring(macro.size()) + L" step(s)) from " +
+                macroFile.wstring());
+            Macro::play(macro, log);
+            log(L"Macro replay finished.");
         } else {
-            log(L"Could not start the UI Automation helper.");
-            ++result.failed;
+            status(L"Automating powerMAX / MemTest / CrystalDiskMark...");
+            const auto script = ensureUiScript(exe);
+            const auto ini = configPath(exe);
+            const auto outDir = tempDir();
+            std::filesystem::create_directories(outDir, ec);
+            const auto psLog = outDir / L"uia_stress.log";
+            const std::wstring psArgs =
+                L"-NoProfile -ExecutionPolicy Bypass -File " + quote(script.wstring()) +
+                L" -Mode run -Base " + quote(base.wstring()) + L" -Ini " + quote(ini.wstring()) +
+                L" -Only " + quote(guiOnly);
+            // Redirect stdout+stderr into the log so any PowerShell error is captured.
+            if (launchProcess(L"powershell.exe", psArgs, {}, true, false, psLog)) {
+                log(L"UI Automation helper started (log: " + psLog.wstring() + L").");
+                ++result.launched;
+            } else {
+                log(L"Could not start the UI Automation helper.");
+                ++result.failed;
+            }
         }
     }
 

@@ -37,6 +37,9 @@ struct Config {
     // tools are launched directly and driven by replaying the macro instead of
     // the single-button UI Automation heuristic.
     bool useMacro = true;
+    // Starts the bench automatically right after a successful update, so the
+    // caller only has to deploy SingleUpdate.exe + macro.txt.
+    bool autoRunStress = true;
     std::wstring powerMaxExe = L"powerMAX\\powerMAX.exe";
     int powerMaxInstances = 1;
     std::wstring memTestExe = L"memtest.exe";

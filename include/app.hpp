@@ -33,7 +33,8 @@ private:
         WM_APP_REBOOT = WM_APP + 6,
         WM_APP_CURRENT = WM_APP + 8,
         WM_APP_STATS = WM_APP + 9,
-        WM_APP_STRESS = WM_APP + 10
+        WM_APP_STRESS = WM_APP + 10,
+        WM_APP_DUMP = WM_APP + 11
     };
 
     static constexpr int kWidth = 780;
@@ -64,6 +65,7 @@ private:
     HWND updateNoDriversButton_ = nullptr;
     HWND runTestsButton_ = nullptr;
     HWND closeReopenButton_ = nullptr;
+    HWND dumpButton_ = nullptr;
 
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -114,6 +116,7 @@ private:
     bool choosing_ = true;
     bool updateWithoutDrivers_ = false;
     bool stressRunning_ = false;
+    bool dumping_ = false;
     std::wstring executionType_;
     std::wstring postSummary_;
     std::wstring doneSummary_;
@@ -127,6 +130,7 @@ private:
     void beginUpdate(bool withoutDrivers);
     void runPostUpdateTasks();
     void runStressTests();
+    void runUiDump();
     void closeAndReopen();
     void setStatus(std::wstring message);
     void setPhase(std::wstring message);

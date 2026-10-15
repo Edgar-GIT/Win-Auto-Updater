@@ -31,9 +31,18 @@ struct Config {
     int diskSpdSeconds = 60;
     int diskSpdSizeMb = 256;
 
-    int memTestInstances = 1;
-
     bool runGuiAutomation = true;
+
+    // When a recorded macro (macro.txt) exists and UseMacro=1, the GUI-only
+    // tools are launched directly and driven by replaying the macro instead of
+    // the single-button UI Automation heuristic.
+    bool useMacro = true;
+    std::wstring powerMaxExe = L"powerMAX\\powerMAX.exe";
+    int powerMaxInstances = 1;
+    std::wstring memTestExe = L"memtest.exe";
+    int memTestInstances = 1;
+    std::wstring cdmExe = L"CrystalDiskMark9\\DiskMark64.exe";
+    int cdmInstances = 1;
 };
 
 struct Callbacks {
@@ -61,5 +70,13 @@ bool detectPortable();
 std::filesystem::path toolsBaseDir();
 std::filesystem::path configPath(const std::filesystem::path& executable);
 std::filesystem::path scriptPath(const std::filesystem::path& executable);
+
+// Writes stress.ini and uia_stress.ps1 next to the executable when missing so
+// the user can deploy the app and tune it without a rebuild.
+void ensureAssets(const std::filesystem::path& executable);
+
+// Runs the UI Automation helper in dump mode (blocking). On success returns the
+// path of the dump file in dumpLog.
+bool dumpUiTree(const std::filesystem::path& executable, std::wstring* dumpLog);
 
 }  // namespace Stress

@@ -141,6 +141,10 @@ int App::run() {
         return 1;
     }
 
+    // Write stress.ini and uia_stress.ps1 next to the executable so they can be
+    // tuned on the target machine without a rebuild.
+    Stress::ensureAssets(currentExecutable());
+
     const auto tempDir = StateManager::baseDir();
     if (tempDir.empty()) {
         appendLog(L"Creating temporary directory...");
@@ -432,6 +436,10 @@ bool App::createUi() {
         0, L"BUTTON", L"Close & reopen", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLOSE_REOPEN)), instance_, nullptr);
 
+    dumpButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Dump UI tree", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DUMP_UI)), instance_, nullptr);
+
     if (titleFont_) {
         SendMessageW(headerTitle_, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont_), TRUE);
     }
@@ -458,6 +466,7 @@ bool App::createUi() {
                      TRUE);
         SendMessageW(runTestsButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(closeReopenButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(dumpButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
     }
 
     // Buttons stay disabled until the run finishes so the window cannot be
@@ -498,8 +507,8 @@ void App::layoutControls() {
     const int contentW = width - margin * 2;
     const int gap = 14;
     const int buttonY = height - margin - kButtonHeight;
-    const int totalButtons = kButtonWidth * 2 + gap;
-    const int startX = (width - totalButtons) / 2;
+    const int auxW = 190;
+    const int auxStartX = (width - (auxW * 3 + gap * 2)) / 2;
 
     if (headerTitle_) {
         MoveWindow(headerTitle_, margin + 58, 22, contentW - 130, 36, TRUE);
@@ -526,22 +535,24 @@ void App::layoutControls() {
             MoveWindow(updateNoDriversButton_, centerX, 240 + chooseH + 16, chooseW, chooseH, TRUE);
         }
         if (uninstallButton_) {
-            MoveWindow(uninstallButton_, startX, buttonY, kButtonWidth, kButtonHeight, TRUE);
+            MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
+        }
+        if (dumpButton_) {
+            MoveWindow(dumpButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
         }
         if (closeButton_) {
-            MoveWindow(closeButton_, startX + kButtonWidth + gap, buttonY, kButtonWidth,
-                       kButtonHeight, TRUE);
+            MoveWindow(closeButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
         }
         return;
     }
 
     if (uiDoneMode_) {
-        const int runW = 260;
+        const int runW = 240;
+        const int dumpW = 170;
         const int runH = 46;
         const int runY = buttonY - kButtonHeight - 14;
-        const int doneBtnW = 190;
-        const int doneTotal = doneBtnW * 3 + gap * 2;
-        const int doneStartX = (width - doneTotal) / 2;
+        const int rowTotal = runW + dumpW + gap;
+        const int rowStartX = (width - rowTotal) / 2;
 
         if (phaseLabel_) {
             MoveWindow(phaseLabel_, margin, 120, contentW, 30, TRUE);
@@ -553,17 +564,19 @@ void App::layoutControls() {
                        summaryCardRect_.bottom - summaryCardRect_.top - 48, TRUE);
         }
         if (runTestsButton_) {
-            MoveWindow(runTestsButton_, (width - runW) / 2, runY, runW, runH, TRUE);
+            MoveWindow(runTestsButton_, rowStartX, runY, runW, runH, TRUE);
+        }
+        if (dumpButton_) {
+            MoveWindow(dumpButton_, rowStartX + runW + gap, runY, dumpW, runH, TRUE);
         }
         if (uninstallButton_) {
-            MoveWindow(uninstallButton_, doneStartX, buttonY, doneBtnW, kButtonHeight, TRUE);
+            MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
         }
         if (closeButton_) {
-            MoveWindow(closeButton_, doneStartX + doneBtnW + gap, buttonY, doneBtnW, kButtonHeight,
-                       TRUE);
+            MoveWindow(closeButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
         }
         if (closeReopenButton_) {
-            MoveWindow(closeReopenButton_, doneStartX + (doneBtnW + gap) * 2, buttonY, doneBtnW,
+            MoveWindow(closeReopenButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW,
                        kButtonHeight, TRUE);
         }
         return;
@@ -590,11 +603,13 @@ void App::layoutControls() {
     }
 
     if (uninstallButton_) {
-        MoveWindow(uninstallButton_, startX, buttonY, kButtonWidth, kButtonHeight, TRUE);
+        MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
+    }
+    if (dumpButton_) {
+        MoveWindow(dumpButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
     }
     if (closeButton_) {
-        MoveWindow(closeButton_, startX + kButtonWidth + gap, buttonY, kButtonWidth, kButtonHeight,
-                   TRUE);
+        MoveWindow(closeButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
     }
 }
 
@@ -920,7 +935,7 @@ void App::runPostUpdateTasks() {
 }
 
 void App::runStressTests() {
-    if (stressRunning_) {
+    if (stressRunning_ || dumping_) {
         return;
     }
     stressRunning_ = true;
@@ -936,6 +951,9 @@ void App::runStressTests() {
                                         L"bench...").c_str());
     }
 
+    if (stressThread_.joinable()) {
+        stressThread_.join();
+    }
     stressThread_ = std::thread([this] {
         const auto post = [this](std::wstring text, bool final) {
             auto* msg = new StressMessage{std::move(text), final};
@@ -958,6 +976,30 @@ void App::runStressTests() {
         } catch (...) {
             post(L"Stress tests failed with an unknown error.", true);
         }
+    });
+}
+
+void App::runUiDump() {
+    if (dumping_ || stressRunning_) {
+        return;
+    }
+    dumping_ = true;
+    if (dumpButton_) {
+        EnableWindow(dumpButton_, FALSE);
+        SetWindowTextW(dumpButton_, L"Dumping...");
+    }
+
+    const auto exe = currentExecutable();
+    if (stressThread_.joinable()) {
+        stressThread_.join();
+    }
+    stressThread_ = std::thread([this, exe] {
+        std::wstring dumpLog;
+        const bool ok = Stress::dumpUiTree(exe, &dumpLog);
+        if (ok && !dumpLog.empty()) {
+            ShellExecuteW(nullptr, L"open", dumpLog.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        PostMessageW(hwnd_, WM_APP_DUMP, ok ? 1 : 0, 0);
     });
 }
 
@@ -1491,6 +1533,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         runStressTests();
                     }
                     return 0;
+                case IDC_DUMP_UI:
+                    runUiDump();
+                    return 0;
                 case IDC_CLOSE_REOPEN:
                     if (allowClose_) {
                         closeAndReopen();
@@ -1563,6 +1608,20 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
                 delete msg;
+            }
+            return 0;
+        }
+        case WM_APP_DUMP: {
+            dumping_ = false;
+            if (dumpButton_) {
+                EnableWindow(dumpButton_, TRUE);
+                SetWindowTextW(dumpButton_, L"Dump UI tree");
+            }
+            if (wParam == 0) {
+                MessageBoxW(hwnd_,
+                            L"Could not run the UI dump. Make sure the tool folder is on the "
+                            L"Desktop and try again.",
+                            L"Win Auto Updater", MB_OK | MB_ICONWARNING);
             }
             return 0;
         }

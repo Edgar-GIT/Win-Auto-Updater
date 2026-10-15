@@ -1,5 +1,7 @@
 #include "stress.hpp"
 
+#include "macro.hpp"
+
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -178,7 +180,8 @@ const char kUiAutomationScript[] = R"PS(param(
     [ValidateSet('run','dump')][string]$Mode = 'run',
     [string]$Base = '',
     [string]$Log = '',
-    [string]$Only = ''
+    [string]$Only = '',
+    [string]$Ini = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -200,12 +203,52 @@ try {
 $AE = [System.Windows.Automation.AutomationElement]
 $TS = [System.Windows.Automation.TreeScope]
 
-# Editable tool table. Tune Window / Buttons on the machine (run with -Mode dump
-# to list the real control names) and adjust the values below.
+function Read-Ini([string]$path) {
+    $map = @{}
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $map }
+    $section = ''
+    foreach ($raw in Get-Content -LiteralPath $path) {
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith(';') -or $line.StartsWith('#')) { continue }
+        if ($line.StartsWith('[') -and $line.EndsWith(']')) {
+            $section = $line.Substring(1, $line.Length - 2).Trim().ToLower()
+            continue
+        }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 0) { continue }
+        $key = $line.Substring(0, $eq).Trim().ToLower()
+        $val = $line.Substring($eq + 1).Trim()
+        $map["$section.$key"] = $val
+    }
+    return $map
+}
+
+function Get-Ini($map, [string]$key, [string]$default) {
+    if ($map.ContainsKey($key) -and $map[$key]) { return $map[$key] }
+    return $default
+}
+
+$ini = Read-Ini $Ini
+
+function Make-Tool([string]$name, [string]$prefix, $defaults) {
+    $exe = Get-Ini $ini ("uia.$prefix.exe") $defaults.Exe
+    $window = Get-Ini $ini ("uia.$prefix.window") $defaults.Window
+    $buttons = Get-Ini $ini ("uia.$prefix.buttons") $defaults.Buttons
+    $instances = [int](Get-Ini $ini ("uia.$prefix.instances") $defaults.Instances)
+    return [pscustomobject]@{
+        Name = $name
+        Exe = $exe
+        Window = $window
+        Buttons = ($buttons -split '\|')
+        Instances = $instances
+    }
+}
+
+# Table read from the [UIA] section of stress.ini (defaults shown here).
 $tools = @(
-    [pscustomobject]@{ Name='powerMAX';        Exe='powerMAX\powerMAX.exe';              Window='powerMAX';        Buttons=@('Start','Test','Iniciar','Begin','Run','Go'); Instances=1 },
-    [pscustomobject]@{ Name='MemTest';         Exe='memtest.exe';                         Window='MemTest';         Buttons=@('Start Testing','Start','Test');             Instances=1 },
-    [pscustomobject]@{ Name='CrystalDiskMark'; Exe='CrystalDiskMark9\DiskMark64.exe';     Window='CrystalDiskMark'; Buttons=@('All','Start','Iniciar');                    Instances=1 }
+    Make-Tool 'powerMAX'        'powermax'        @{ Exe='powerMAX\powerMAX.exe';              Window='powerMAX';        Buttons='Start|Test|Iniciar|Begin|Run|Go'; Instances='1' },
+    Make-Tool 'MemTest'         'memtest'         @{ Exe='memtest.exe';                        Window='MemTest';         Buttons='Start Testing|Start|Test';        Instances='1' },
+    Make-Tool 'CrystalDiskMark' 'crystaldiskmark' @{ Exe='CrystalDiskMark9\DiskMark64.exe';    Window='CrystalDiskMark'; Buttons='All|Start|Iniciar';               Instances='1' }
 )
 
 function Get-TopWindows {
@@ -221,7 +264,7 @@ function Find-StartButton($window, $tokens) {
         try { $name = $b.Current.Name } catch {}
         if (-not $name) { continue }
         foreach ($t in $tokens) {
-            if ($name.ToLower().Contains($t.ToLower())) { return $b }
+            if ($t -and $name.ToLower().Contains($t.ToLower())) { return $b }
         }
     }
     return $null
@@ -300,13 +343,13 @@ foreach ($tool in $selected) {
 }
 )PS";
 
-// Writes the embedded UI Automation helper next to the executable when absent
-// so the user can edit and tune it on the target machine.
-std::filesystem::path ensureUiScript() {
-    const auto path = Stress::scriptPath(currentExecutable());
-    std::error_code ec;
-    if (!path.empty() && !std::filesystem::exists(path, ec)) {
-        std::ofstream out(path, std::ios::binary);
+// Writes the embedded UI Automation helper next to the executable. It is
+// rewritten on every launch so the app always ships the current version; all
+// per-machine tuning lives in stress.ini, not in this script.
+std::filesystem::path ensureUiScript(const std::filesystem::path& executable) {
+    const auto path = Stress::scriptPath(executable);
+    if (!path.empty()) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (out.is_open()) {
             out << kUiAutomationScript;
         }
@@ -374,10 +417,27 @@ Config loadConfig(const std::filesystem::path& executable) {
             out << L"DiskSpdSizeMb=256\n";
             out << L"DiskSpdArgs=\n";
             out << L"MemTest=1\n";
-            out << L"MemTestInstances=1\n";
             out << L"PowerMax=1\n";
             out << L"CrystalDiskMark=0\n";
             out << L"RunGuiAutomation=1\n";
+            out << L"UseMacro=1\n\n";
+            out << L"[UIA]\n";
+            out << L"; UI Automation settings for GUI-only tools.\n";
+            out << L"; Buttons are matched (case-insensitive, substring) against the names\n";
+            out << L"; found in the window. Use the \"Dump UI tree\" button in the app to\n";
+            out << L"; discover the real names, then edit these values.\n";
+            out << L"PowerMax.Exe=powerMAX\\powerMAX.exe\n";
+            out << L"PowerMax.Window=powerMAX\n";
+            out << L"PowerMax.Buttons=Start|Test|Iniciar|Begin|Run|Go\n";
+            out << L"PowerMax.Instances=1\n";
+            out << L"MemTest.Exe=memtest.exe\n";
+            out << L"MemTest.Window=MemTest\n";
+            out << L"MemTest.Buttons=Start Testing|Start|Test\n";
+            out << L"MemTest.Instances=1\n";
+            out << L"CrystalDiskMark.Exe=CrystalDiskMark9\\DiskMark64.exe\n";
+            out << L"CrystalDiskMark.Window=CrystalDiskMark\n";
+            out << L"CrystalDiskMark.Buttons=All|Start|Iniciar\n";
+            out << L"CrystalDiskMark.Instances=1\n";
         }
         return config;
     }
@@ -388,9 +448,14 @@ Config loadConfig(const std::filesystem::path& executable) {
     }
 
     std::wstring line;
+    std::wstring section;
     while (std::getline(in, line)) {
         line = trim(line);
         if (line.empty() || line[0] == L';' || line[0] == L'#') {
+            continue;
+        }
+        if (line.front() == L'[' && line.back() == L']') {
+            section = lower(trim(line.substr(1, line.size() - 2)));
             continue;
         }
         const auto eq = line.find(L'=');
@@ -399,6 +464,16 @@ Config loadConfig(const std::filesystem::path& executable) {
         }
         const std::wstring key = lower(trim(line.substr(0, eq)));
         const std::wstring value = trim(line.substr(eq + 1));
+
+        if (section == L"uia") {
+            if (key == L"powermax.exe") config.powerMaxExe = value;
+            else if (key == L"powermax.instances") config.powerMaxInstances = parseInt(value, config.powerMaxInstances);
+            else if (key == L"memtest.exe") config.memTestExe = value;
+            else if (key == L"memtest.instances") config.memTestInstances = parseInt(value, config.memTestInstances);
+            else if (key == L"crystaldiskmark.exe") config.cdmExe = value;
+            else if (key == L"crystaldiskmark.instances") config.cdmInstances = parseInt(value, config.cdmInstances);
+            continue;
+        }
 
         if (key == L"openhardwaremonitor") config.openHardwareMonitor = parseBool(value, config.openHardwareMonitor);
         else if (key == L"batterycare") config.batteryCare = parseBool(value, config.batteryCare);
@@ -415,10 +490,10 @@ Config loadConfig(const std::filesystem::path& executable) {
         else if (key == L"diskspdsizemb") config.diskSpdSizeMb = parseInt(value, config.diskSpdSizeMb);
         else if (key == L"diskspdargs") config.diskSpdArgs = value;
         else if (key == L"memtest") config.memTest = parseBool(value, config.memTest);
-        else if (key == L"memtestinstances") config.memTestInstances = parseInt(value, config.memTestInstances);
         else if (key == L"powermax") config.powerMax = parseBool(value, config.powerMax);
         else if (key == L"crystaldiskmark") config.crystalDiskMarkGui = parseBool(value, config.crystalDiskMarkGui);
         else if (key == L"runguiautomation") config.runGuiAutomation = parseBool(value, config.runGuiAutomation);
+        else if (key == L"usemacro") config.useMacro = parseBool(value, config.useMacro);
     }
     return config;
 }
@@ -564,15 +639,18 @@ Result run(const Config& config, const Callbacks& callbacks) {
 
     if (config.runGuiAutomation && !guiOnly.empty()) {
         status(L"Automating powerMAX / MemTest / CrystalDiskMark...");
-        const auto script = ensureUiScript();
+        const auto exe = currentExecutable();
+        const auto script = ensureUiScript(exe);
+        const auto ini = configPath(exe);
         const auto outDir = tempDir();
         std::filesystem::create_directories(outDir, ec);
         const auto psLog = outDir / L"uia_stress.log";
         const std::wstring psArgs =
             L"-NoProfile -ExecutionPolicy Bypass -File " + quote(script.wstring()) +
-            L" -Mode run -Base " + quote(base.wstring()) + L" -Log " + quote(psLog.wstring()) +
+            L" -Mode run -Base " + quote(base.wstring()) + L" -Ini " + quote(ini.wstring()) +
             L" -Only " + quote(guiOnly);
-        if (launchProcess(L"powershell.exe", psArgs, {}, true, false)) {
+        // Redirect stdout+stderr into the log so any PowerShell error is captured.
+        if (launchProcess(L"powershell.exe", psArgs, {}, true, false, psLog)) {
             log(L"UI Automation helper started (log: " + psLog.wstring() + L").");
             ++result.launched;
         } else {
@@ -586,6 +664,34 @@ Result run(const Config& config, const Callbacks& callbacks) {
                      std::to_wstring(result.failed) + L" failed.";
     log(result.message);
     return result;
+}
+
+void ensureAssets(const std::filesystem::path& executable) {
+    // loadConfig writes the stress.ini template when the file is missing.
+    (void)loadConfig(executable);
+    (void)ensureUiScript(executable);
+}
+
+bool dumpUiTree(const std::filesystem::path& executable, std::wstring* dumpLog) {
+    const auto script = ensureUiScript(executable);
+
+    // Write the dump next to the executable so it is easy to find and send back.
+    std::filesystem::path log = executable.parent_path() / L"uia_dump.txt";
+    std::error_code ec;
+    if (log.parent_path().empty()) {
+        log = tempDir() / L"uia_dump.txt";
+    }
+    std::filesystem::create_directories(log.parent_path(), ec);
+    DeleteFileW(log.wstring().c_str());
+    if (dumpLog) {
+        *dumpLog = log.wstring();
+    }
+
+    const std::wstring psArgs = L"-NoProfile -ExecutionPolicy Bypass -File " +
+                                quote(script.wstring()) + L" -Mode dump -Base " +
+                                quote(toolsBaseDir().wstring());
+    // stdout+stderr are redirected into the dump file, so PowerShell errors show up too.
+    return launchProcess(L"powershell.exe", psArgs, {}, true, true, log);
 }
 
 }  // namespace Stress

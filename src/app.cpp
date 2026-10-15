@@ -451,6 +451,10 @@ bool App::createUi() {
         0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STRESS_TOGGLE)), instance_, nullptr);
 
+    reopenToggleButton_ = CreateWindowExW(
+        0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_REOPEN_TOGGLE)), instance_, nullptr);
+
     if (titleFont_) {
         SendMessageW(headerTitle_, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont_), TRUE);
     }
@@ -480,12 +484,14 @@ bool App::createUi() {
         SendMessageW(dumpButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(recordButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(stressToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(reopenToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
     }
+    updateReopenToggleText();
 
-    // Buttons stay disabled until the run finishes so the window cannot be
-    // closed halfway through an installation. On the mode chooser the window
-    // may be closed, but Uninstall stays disabled until the run completes.
-    EnableWindow(uninstallButton_, FALSE);
+    // Close stays available on the chooser, and Uninstall is enabled too so the
+    // tool can be removed right after a reopen (it is disabled again while an
+    // update is running, in beginUpdate). Uninstall always asks for confirmation.
+    EnableWindow(uninstallButton_, TRUE);
     allowClose_ = true;
 
     if (terminal_) {
@@ -541,11 +547,14 @@ void App::layoutControls() {
         if (currentLabel_) {
             MoveWindow(currentLabel_, margin, 186, contentW, 24, TRUE);
         }
+        if (stressToggleButton_) {
+            MoveWindow(stressToggleButton_, centerX, 218, chooseW, 32, TRUE);
+        }
         if (updateButton_) {
-            MoveWindow(updateButton_, centerX, 240, chooseW, chooseH, TRUE);
+            MoveWindow(updateButton_, centerX, 262, chooseW, chooseH, TRUE);
         }
         if (updateNoDriversButton_) {
-            MoveWindow(updateNoDriversButton_, centerX, 240 + chooseH + 16, chooseW, chooseH, TRUE);
+            MoveWindow(updateNoDriversButton_, centerX, 262 + chooseH + 14, chooseW, chooseH, TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
@@ -567,6 +576,9 @@ void App::layoutControls() {
         const int dumpW = 170;
         const int runH = 46;
         const int runY = buttonY - kButtonHeight - 14;
+        const int reopenH = 32;
+        const int reopenW = 300;
+        const int reopenY = runY - reopenH - 10;
         const int rowTotal = runW + dumpW + gap;
         const int rowStartX = (width - rowTotal) / 2;
 
@@ -574,10 +586,13 @@ void App::layoutControls() {
             MoveWindow(phaseLabel_, margin, 120, contentW, 30, TRUE);
         }
         if (summaryLabel_) {
-            summaryCardRect_ = {margin, 162, margin + contentW, runY - 18};
+            summaryCardRect_ = {margin, 162, margin + contentW, reopenY - 14};
             MoveWindow(summaryLabel_, summaryCardRect_.left + 26, summaryCardRect_.top + 24,
                        summaryCardRect_.right - summaryCardRect_.left - 52,
                        summaryCardRect_.bottom - summaryCardRect_.top - 48, TRUE);
+        }
+        if (reopenToggleButton_) {
+            MoveWindow(reopenToggleButton_, (width - reopenW) / 2, reopenY, reopenW, reopenH, TRUE);
         }
         if (runTestsButton_) {
             MoveWindow(runTestsButton_, rowStartX, runY, runW, runH, TRUE);
@@ -772,6 +787,9 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
     if (currentLabel_) {
         ShowWindow(currentLabel_, SW_HIDE);
     }
+    if (stressToggleButton_) {
+        ShowWindow(stressToggleButton_, SW_HIDE);
+    }
 
     setPhase(success ? L"Finished — this computer is ready"
                      : L"Stopped — an error occurred");
@@ -825,6 +843,14 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
             ShowWindow(runTestsButton_, SW_HIDE);
         }
     }
+    if (reopenToggleButton_) {
+        if (success) {
+            ShowWindow(reopenToggleButton_, SW_SHOW);
+            EnableWindow(reopenToggleButton_, TRUE);
+        } else {
+            ShowWindow(reopenToggleButton_, SW_HIDE);
+        }
+    }
     if (closeReopenButton_) {
         ShowWindow(closeReopenButton_, SW_SHOW);
         EnableWindow(closeReopenButton_, TRUE);
@@ -833,6 +859,12 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
     showActionButtons(true);
     layoutControls();
     InvalidateRect(hwnd_, nullptr, TRUE);
+
+    // "After update: run stress tests" — kick off the bench once the update ends.
+    if (success && autoStressAfterUpdate_ && !autoStressStarted_) {
+        autoStressStarted_ = true;
+        runStressTests();
+    }
 }
 
 void App::performUninstall() {
@@ -861,6 +893,9 @@ void App::performUninstall() {
     }
     if (closeReopenButton_) {
         ShowWindow(closeReopenButton_, SW_HIDE);
+    }
+    if (reopenToggleButton_) {
+        ShowWindow(reopenToggleButton_, SW_HIDE);
     }
 
     if (!exe.empty()) {
@@ -910,6 +945,9 @@ void App::beginUpdate(bool withoutDrivers) {
     }
     if (updateNoDriversButton_) {
         ShowWindow(updateNoDriversButton_, SW_HIDE);
+    }
+    if (stressToggleButton_) {
+        ShowWindow(stressToggleButton_, SW_HIDE);
     }
     if (terminal_) {
         ShowWindow(terminal_, SW_SHOW);
@@ -1045,6 +1083,14 @@ void App::updateStressToggleText() {
         SetWindowTextW(stressToggleButton_,
                        autoStressAfterUpdate_ ? L"After update: run stress tests"
                                               : L"After update: stop");
+    }
+}
+
+void App::updateReopenToggleText() {
+    if (reopenToggleButton_) {
+        SetWindowTextW(reopenToggleButton_,
+                       reopenAfterRestart_ ? L"Reopen after restart: ON"
+                                           : L"Reopen after restart: OFF");
     }
 }
 
@@ -1292,8 +1338,8 @@ void App::worker() {
             cleanupDone_ = true;
             logSummary(L"Success");
             logger_.log(L"System is up to date. Cleaning up...");
-            Scheduler scheduler(exe);
-            scheduler.remove();
+            // Keep the logon task so the tool reopens after a restart until it is
+            // uninstalled (or the "Reopen after restart" toggle is turned off).
             stateManager.remove();
             PostMessageW(hwnd_, WM_APP_DONE, 0, 0);
             return;
@@ -1524,10 +1570,16 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
     }
     HDC hdc = item->hDC;
     RECT r = item->rcItem;
-    const bool primary =
-        item->CtlID == IDC_CLOSE || item->CtlID == IDC_UPDATE || item->CtlID == IDC_RUN_TESTS;
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
     const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+    bool primary = item->CtlID == IDC_CLOSE || item->CtlID == IDC_UPDATE ||
+                   item->CtlID == IDC_RUN_TESTS;
+    // The chooser toggle reads as "on" when auto-stress is selected.
+    if (item->CtlID == IDC_STRESS_TOGGLE) {
+        primary = autoStressAfterUpdate_;
+    } else if (item->CtlID == IDC_REOPEN_TOGGLE) {
+        primary = reopenAfterRestart_;
+    }
 
     FillRect(hdc, &r, bgBrush_ ? bgBrush_ : static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     InflateRect(&r, -1, -1);
@@ -1637,6 +1689,25 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         autoStressAfterUpdate_ = !autoStressAfterUpdate_;
                         updateStressToggleText();
                         InvalidateRect(stressToggleButton_, nullptr, TRUE);
+                    }
+                    return 0;
+                case IDC_REOPEN_TOGGLE:
+                    if (uiDoneMode_) {
+                        reopenAfterRestart_ = !reopenAfterRestart_;
+                        updateReopenToggleText();
+                        InvalidateRect(reopenToggleButton_, nullptr, TRUE);
+                        Scheduler scheduler(currentExecutable());
+                        if (reopenAfterRestart_) {
+                            std::wstring error;
+                            if (!scheduler.create(&error)) {
+                                MessageBoxW(hwnd_,
+                                            L"Could not schedule the tool to reopen after a "
+                                            L"restart:\r\n" + error,
+                                            L"Win Auto Updater", MB_OK | MB_ICONWARNING);
+                            }
+                        } else {
+                            scheduler.remove();
+                        }
                     }
                     return 0;
                 case IDC_UPDATE_NO_DRIVERS:

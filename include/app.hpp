@@ -69,6 +69,7 @@ private:
     HWND dumpButton_ = nullptr;
     HWND recordButton_ = nullptr;
     HWND stressToggleButton_ = nullptr;
+    HWND reopenToggleButton_ = nullptr;
 
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -121,6 +122,9 @@ private:
     // Chooser decision: run the stress bench automatically once the update ends.
     bool autoStressAfterUpdate_ = true;
     bool autoStressStarted_ = false;
+    // Done-screen decision: keep the logon task so the tool reopens after every
+    // restart until it is uninstalled.
+    bool reopenAfterRestart_ = true;
     bool stressRunning_ = false;
     bool dumping_ = false;
     bool recording_ = false;
@@ -143,6 +147,7 @@ private:
     void finishRecording();
     void applyHint(const std::wstring& hint);
     void updateStressToggleText();
+    void updateReopenToggleText();
     void closeAndReopen();
     void setStatus(std::wstring message);
     void setPhase(std::wstring message);

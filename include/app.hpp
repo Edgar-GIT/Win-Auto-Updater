@@ -32,7 +32,8 @@ private:
         WM_APP_ERROR = WM_APP + 5,
         WM_APP_REBOOT = WM_APP + 6,
         WM_APP_CURRENT = WM_APP + 8,
-        WM_APP_STATS = WM_APP + 9
+        WM_APP_STATS = WM_APP + 9,
+        WM_APP_STRESS = WM_APP + 10
     };
 
     static constexpr int kWidth = 780;
@@ -61,6 +62,8 @@ private:
     HWND closeButton_ = nullptr;
     HWND updateButton_ = nullptr;
     HWND updateNoDriversButton_ = nullptr;
+    HWND runTestsButton_ = nullptr;
+    HWND closeReopenButton_ = nullptr;
 
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -99,6 +102,7 @@ private:
 
     int lastPercent_ = 0;
     std::thread workerThread_;
+    std::thread stressThread_;
     int rebootCountdown_ = 0;
     std::atomic<int> lastPostedPercent_{-1};
     std::atomic<unsigned long long> lastProgressPostMs_{0};
@@ -109,8 +113,11 @@ private:
     bool cleanupDone_ = false;
     bool choosing_ = true;
     bool updateWithoutDrivers_ = false;
+    bool stressRunning_ = false;
     std::wstring executionType_;
     std::wstring postSummary_;
+    std::wstring doneSummary_;
+    std::wstring stressLog_;
 
     bool elevateIfNeeded();
     bool ensureInternet();
@@ -119,6 +126,8 @@ private:
     void startWorker();
     void beginUpdate(bool withoutDrivers);
     void runPostUpdateTasks();
+    void runStressTests();
+    void closeAndReopen();
     void setStatus(std::wstring message);
     void setPhase(std::wstring message);
     void setCurrent(std::wstring message);

@@ -7,6 +7,7 @@
 #include "restart.hpp"
 #include "scheduler.hpp"
 #include "state.hpp"
+#include "stress.hpp"
 #include "update.hpp"
 
 #include "../resources/resource.h"
@@ -95,6 +96,11 @@ std::wstring sanitizeLogLine(std::wstring message) {
     }
     return message;
 }
+
+struct StressMessage {
+    std::wstring text;
+    bool final = false;
+};
 
 }  // namespace
 
@@ -193,6 +199,9 @@ int App::run() {
 
     if (workerThread_.joinable()) {
         workerThread_.join();
+    }
+    if (stressThread_.joinable()) {
+        stressThread_.join();
     }
 
     if (titleFont_) {
@@ -415,6 +424,14 @@ bool App::createUi() {
         hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UPDATE_NO_DRIVERS)), instance_,
         nullptr);
 
+    runTestsButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Run stress tests", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RUN_TESTS)), instance_, nullptr);
+
+    closeReopenButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Close & reopen", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLOSE_REOPEN)), instance_, nullptr);
+
     if (titleFont_) {
         SendMessageW(headerTitle_, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont_), TRUE);
     }
@@ -439,6 +456,8 @@ bool App::createUi() {
         SendMessageW(updateButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(updateNoDriversButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_),
                      TRUE);
+        SendMessageW(runTestsButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(closeReopenButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
     }
 
     // Buttons stay disabled until the run finishes so the window cannot be
@@ -517,20 +536,34 @@ void App::layoutControls() {
     }
 
     if (uiDoneMode_) {
+        const int runW = 260;
+        const int runH = 46;
+        const int runY = buttonY - kButtonHeight - 14;
+        const int doneBtnW = 190;
+        const int doneTotal = doneBtnW * 3 + gap * 2;
+        const int doneStartX = (width - doneTotal) / 2;
+
         if (phaseLabel_) {
             MoveWindow(phaseLabel_, margin, 120, contentW, 30, TRUE);
         }
         if (summaryLabel_) {
-            summaryCardRect_ = {margin, 162, margin + contentW, buttonY - 18};
+            summaryCardRect_ = {margin, 162, margin + contentW, runY - 18};
             MoveWindow(summaryLabel_, summaryCardRect_.left + 26, summaryCardRect_.top + 24,
                        summaryCardRect_.right - summaryCardRect_.left - 52,
                        summaryCardRect_.bottom - summaryCardRect_.top - 48, TRUE);
         }
+        if (runTestsButton_) {
+            MoveWindow(runTestsButton_, (width - runW) / 2, runY, runW, runH, TRUE);
+        }
         if (uninstallButton_) {
-            MoveWindow(uninstallButton_, startX, buttonY, kButtonWidth, kButtonHeight, TRUE);
+            MoveWindow(uninstallButton_, doneStartX, buttonY, doneBtnW, kButtonHeight, TRUE);
         }
         if (closeButton_) {
-            MoveWindow(closeButton_, startX + kButtonWidth + gap, buttonY, kButtonWidth,
+            MoveWindow(closeButton_, doneStartX + doneBtnW + gap, buttonY, doneBtnW, kButtonHeight,
+                       TRUE);
+        }
+        if (closeReopenButton_) {
+            MoveWindow(closeReopenButton_, doneStartX + (doneBtnW + gap) * 2, buttonY, doneBtnW,
                        kButtonHeight, TRUE);
         }
         return;
@@ -744,6 +777,21 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         SetWindowTextW(summaryLabel_, summary.c_str());
         ShowWindow(summaryLabel_, SW_SHOW);
     }
+    doneSummary_ = summary;
+    stressLog_.clear();
+
+    if (runTestsButton_) {
+        if (success) {
+            ShowWindow(runTestsButton_, SW_SHOW);
+            EnableWindow(runTestsButton_, TRUE);
+        } else {
+            ShowWindow(runTestsButton_, SW_HIDE);
+        }
+    }
+    if (closeReopenButton_) {
+        ShowWindow(closeReopenButton_, SW_SHOW);
+        EnableWindow(closeReopenButton_, TRUE);
+    }
 
     showActionButtons(true);
     layoutControls();
@@ -863,6 +911,65 @@ void App::runPostUpdateTasks() {
             driver.detected ? driver.vendorName : std::wstring(L"not detected");
         postSummary_ += L"Graphics (" + label + L"): " + driver.message + L"\r\n";
     }
+}
+
+void App::runStressTests() {
+    if (stressRunning_) {
+        return;
+    }
+    stressRunning_ = true;
+    stressLog_.clear();
+
+    if (runTestsButton_) {
+        EnableWindow(runTestsButton_, FALSE);
+        SetWindowTextW(runTestsButton_, L"Tests running...");
+    }
+    if (summaryLabel_) {
+        SetWindowTextW(summaryLabel_,
+                       (doneSummary_ + L"\r\n\r\nStress tests:\r\nLaunching hardware test "
+                                        L"bench...").c_str());
+    }
+
+    stressThread_ = std::thread([this] {
+        const auto post = [this](std::wstring text, bool final) {
+            auto* msg = new StressMessage{std::move(text), final};
+            if (!PostMessageW(hwnd_, WM_APP_STRESS, 0, reinterpret_cast<LPARAM>(msg))) {
+                delete msg;
+            }
+        };
+
+        Stress::Callbacks callbacks;
+        callbacks.log = [&](const std::wstring& m) { post(L"• " + m, false); };
+        callbacks.status = [&](const std::wstring& m) { post(m, false); };
+
+        try {
+            const auto config = Stress::loadConfig(currentExecutable());
+            const Stress::Result result = Stress::run(config, callbacks);
+            post(L"Done. " + result.message, true);
+        } catch (const std::exception& ex) {
+            const std::string what = ex.what();
+            post(L"Stress tests failed: " + std::wstring(what.begin(), what.end()), true);
+        } catch (...) {
+            post(L"Stress tests failed with an unknown error.", true);
+        }
+    });
+}
+
+void App::closeAndReopen() {
+    const auto exe = currentExecutable();
+    Scheduler scheduler(exe);
+    std::wstring error;
+    if (!scheduler.armReopen(&error)) {
+        const std::wstring message =
+            L"The tool will close, but it could not be scheduled to reopen on the next "
+            L"restart:\r\n" +
+            error;
+        MessageBoxW(hwnd_, message.c_str(), L"Win Auto Updater", MB_OK | MB_ICONWARNING);
+    }
+
+    allowClose_ = true;
+    running_ = false;
+    DestroyWindow(hwnd_);
 }
 
 void App::worker() {
@@ -1257,7 +1364,8 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
     }
     HDC hdc = item->hDC;
     RECT r = item->rcItem;
-    const bool primary = item->CtlID == IDC_CLOSE || item->CtlID == IDC_UPDATE;
+    const bool primary =
+        item->CtlID == IDC_CLOSE || item->CtlID == IDC_UPDATE || item->CtlID == IDC_RUN_TESTS;
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
     const bool pressed = (item->itemState & ODS_SELECTED) != 0;
 
@@ -1372,6 +1480,16 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         performUninstall();
                     }
                     return 0;
+                case IDC_RUN_TESTS:
+                    if (uiDoneMode_) {
+                        runStressTests();
+                    }
+                    return 0;
+                case IDC_CLOSE_REOPEN:
+                    if (allowClose_) {
+                        closeAndReopen();
+                    }
+                    return 0;
                 case IDC_CLOSE:
                     if (allowClose_) {
                         running_ = false;
@@ -1419,6 +1537,26 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     appendLog(*text);
                 }
                 delete text;
+            }
+            return 0;
+        }
+        case WM_APP_STRESS: {
+            auto* msg = reinterpret_cast<StressMessage*>(lParam);
+            if (msg) {
+                stressLog_ += msg->text + L"\r\n";
+                if (summaryLabel_) {
+                    SetWindowTextW(
+                        summaryLabel_,
+                        (doneSummary_ + L"\r\n\r\nStress tests:\r\n" + stressLog_).c_str());
+                }
+                if (msg->final) {
+                    stressRunning_ = false;
+                    if (runTestsButton_) {
+                        EnableWindow(runTestsButton_, TRUE);
+                        SetWindowTextW(runTestsButton_, L"Run stress tests");
+                    }
+                }
+                delete msg;
             }
             return 0;
         }

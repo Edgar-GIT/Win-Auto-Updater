@@ -335,6 +335,10 @@ bool Scheduler::createTask(std::wstring* error) const {
     return true;
 }
 
+bool Scheduler::armReopen(std::wstring* error) const {
+    return createRunOnce(error);
+}
+
 bool Scheduler::create(std::wstring* error) const {
     std::wstring taskError;
     const bool taskOk = createTask(&taskError);

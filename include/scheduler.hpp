@@ -12,6 +12,8 @@ public:
 
     // Creates Task Scheduler logon task + RunOnce backup so the app resumes after reboot.
     bool create(std::wstring* error = nullptr) const;
+    // Registers a one-shot RunOnce entry so the app opens once on the next sign-in.
+    bool armReopen(std::wstring* error = nullptr) const;
     bool remove() const;
     bool exists() const;
 

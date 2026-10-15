@@ -20,6 +20,7 @@ add_executable(SingleUpdate WIN32
     src/display.cpp
     src/driverpolicy.cpp
     src/drivers.cpp
+    src/stress.cpp
     resources/app.rc
 )
 

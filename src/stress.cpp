@@ -57,6 +57,18 @@ std::wstring quote(const std::wstring& value) {
     return L"\"" + value + L"\"";
 }
 
+std::string toNarrow(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+    const int len = WideCharToMultiByte(CP_ACP, 0, value.c_str(), static_cast<int>(value.size()),
+                                        nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_ACP, 0, value.c_str(), static_cast<int>(value.size()), out.data(), len,
+                        nullptr, nullptr);
+    return out;
+}
+
 std::filesystem::path currentExecutable() {
     wchar_t buffer[MAX_PATH]{};
     const DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
@@ -495,7 +507,6 @@ Result run(const Config& config, const Callbacks& callbacks) {
                 config.diskDrive + L"\\WinAutoUpdater_diskspd.dat";
             const auto outDir = tempDir();
             std::filesystem::create_directories(outDir, ec);
-            const auto results = outDir / L"diskspd.txt";
 
             const std::vector<std::wstring> labels = {
                 L"SEQ1M Q8T1 read", L"SEQ1M Q8T1 write", L"RND4K Q32T1 read", L"RND4K Q32T1 write"};
@@ -504,21 +515,33 @@ Result run(const Config& config, const Callbacks& callbacks) {
             const std::vector<std::wstring> writes = {L"0", L"100", L"0", L"100"};
             const std::vector<bool> randoms = {false, false, true, true};
 
-            for (size_t i = 0; i < labels.size(); ++i) {
-                status(L"Disk benchmark: " + labels[i]);
-                log(L"DiskSpd " + labels[i] + L"...");
-                const std::wstring args = buildDiskSpdArgs(config, blocks[i], queues[i], L"1",
-                                                           writes[i], randoms[i], target);
-                if (launchProcess(diskSpd.wstring(), args, diskSpd.parent_path(), true, true,
-                                  results)) {
+            // Serialize the four runs in a detached batch file so this thread
+            // does not block for minutes and so the runs never overlap.
+            const auto batch = outDir / L"diskspd_run.bat";
+            std::ofstream out(batch, std::ios::binary);
+            if (out.is_open()) {
+                out << "@echo off\r\n";
+                for (size_t i = 0; i < labels.size(); ++i) {
+                    const std::wstring args = buildDiskSpdArgs(config, blocks[i], queues[i], L"1",
+                                                               writes[i], randoms[i], target);
+                    const auto logFile = outDir / (L"diskspd_" + std::to_wstring(i + 1) + L".txt");
+                    out << "\"" << toNarrow(diskSpd.wstring()) << "\" " << toNarrow(args) << " > \""
+                        << toNarrow(logFile.wstring()) << "\" 2>&1\r\n";
+                }
+                out << "del /f /q \"" << toNarrow(target.wstring()) << "\" > nul 2>&1\r\n";
+                out.close();
+
+                if (launchProcess(L"cmd.exe", L"/c " + quote(batch.wstring()), {}, true, false)) {
+                    log(L"DiskSpd started in the background. Results: " + outDir.wstring());
                     ++result.launched;
                 } else {
-                    log(L"DiskSpd failed to start for " + labels[i]);
+                    log(L"Could not start the DiskSpd batch.");
                     ++result.failed;
                 }
+            } else {
+                log(L"Could not write the DiskSpd batch file.");
+                ++result.failed;
             }
-            DeleteFileW(target.wstring().c_str());
-            log(L"DiskSpd results: " + results.wstring());
         } else {
             log(L"Missing DiskSpd: " + diskSpd.wstring());
             ++result.failed;

@@ -27,6 +27,7 @@ struct Config {
     int primeMinutes = 120;
 
     std::wstring diskDrive = L"C:";
+    std::wstring diskSpdArgs;
     int diskSpdSeconds = 60;
     int diskSpdSizeMb = 256;
 

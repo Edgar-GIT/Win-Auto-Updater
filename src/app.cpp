@@ -819,6 +819,12 @@ void App::performUninstall() {
         EnableWindow(uninstallButton_, FALSE);
         SetWindowTextW(uninstallButton_, L"Uninstalled");
     }
+    if (runTestsButton_) {
+        ShowWindow(runTestsButton_, SW_HIDE);
+    }
+    if (closeReopenButton_) {
+        ShowWindow(closeReopenButton_, SW_HIDE);
+    }
 
     if (!exe.empty()) {
         MoveFileExW(exe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);

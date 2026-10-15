@@ -8,6 +8,7 @@ public:
     struct State {
         std::wstring phase = L"installing";
         int rebootCount = 0;
+        bool withoutDrivers = false;
     };
 
     StateManager();

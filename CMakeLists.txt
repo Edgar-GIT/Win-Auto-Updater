@@ -17,6 +17,9 @@ add_executable(SingleUpdate WIN32
     src/restart.cpp
     src/cleanup.cpp
     src/state.cpp
+    src/display.cpp
+    src/driverpolicy.cpp
+    src/drivers.cpp
     resources/app.rc
 )
 
@@ -66,6 +69,7 @@ target_link_libraries(SingleUpdate PRIVATE
     gdi32
     version
     secur32
+    dwmapi
 )
 
 set_target_properties(SingleUpdate PROPERTIES

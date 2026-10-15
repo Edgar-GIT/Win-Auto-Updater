@@ -12,10 +12,12 @@
 #include <wuapi.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -273,6 +275,19 @@ bool updateAlreadyDownloaded(IUpdate* update) {
         return false;
     }
     return downloaded == VARIANT_TRUE;
+}
+
+// Final-state check used to avoid counting an update as failed when it is, in
+// fact, already installed (e.g. a reported error that still applied cleanly).
+bool updateIsInstalled(IUpdate* update) {
+    if (!update) {
+        return false;
+    }
+    VARIANT_BOOL installed = VARIANT_FALSE;
+    if (FAILED(update->get_IsInstalled(&installed))) {
+        return false;
+    }
+    return installed == VARIANT_TRUE;
 }
 
 bool resultNeedsReboot(IInstallationResult* result) {
@@ -851,6 +866,20 @@ void UpdateEngine::setProgressCallback(ProgressCallback callback) {
     progressCallback_ = std::move(callback);
 }
 
+void UpdateEngine::setStatsCallback(StatsCallback callback) {
+    statsCallback_ = std::move(callback);
+}
+
+void UpdateEngine::refreshFinished() {
+    totals_.finished = totals_.installed + totals_.skipped + totals_.failed;
+}
+
+void UpdateEngine::notifyStats() const {
+    if (statsCallback_) {
+        statsCallback_(totals_);
+    }
+}
+
 void UpdateEngine::notify(Phase phase, std::wstring_view detail) const {
     if (statusCallback_) {
         statusCallback_(phase, detail);
@@ -997,6 +1026,9 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
         const long count = collectionCount(updates.get());
         result.updatesFound = static_cast<int>(count);
+        totals_.found += static_cast<int>(count);
+        refreshFinished();
+        notifyStats();
 
         if (count == 0) {
             log(L"No pending updates found. Checking for installed updates needing restart...");
@@ -1053,31 +1085,71 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         long installed = 0;
         long failed = 0;
         long skipped = 0;
+        long downloaded = 0;
+        long avSeen = 0;  // number of antivirus updates encountered (any cycle)
         bool rebootRequired = false;
         std::wstring failureLog;
+        std::vector<std::wstring> failedTitles;
+
+        // Records a failure (both cycle-local and cumulative) and keeps the
+        // title around so it can be re-verified against the final system state.
+        const auto markFailure = [&](const std::wstring& title, const std::wstring& reason) {
+            ++failed;
+            failedTitles.push_back(title);
+            failureLog += L"- " + title + L": " + reason + L"\r\n";
+            totals_.failed += 1;
+            refreshFinished();
+            notifyStats();
+        };
+        const auto markInstalled = [&](const std::wstring& title) {
+            ++installed;
+            totals_.installed += 1;
+            refreshFinished();
+            notifyStats();
+            log(L"Installed: " + title);
+        };
 
         for (long i = 0; i < count; ++i) {
             ComPtr<IUpdate> update;
             if (FAILED(updates->get_Item(i, update.put())) || !update) {
                 ++failed;
                 failureLog += L"- Unknown update: could not read entry.\r\n";
+                totals_.failed += 1;
+                refreshFinished();
+                notifyStats();
                 continue;
             }
 
             const std::wstring title = updateTitle(update.get());
 
             if (isDefenderRelatedUpdate(update.get(), title)) {
-                notify(Phase::Downloading, L"Skipping Defender/antivirus update...");
-                log(L"Skipped (managed by Windows Security / Defender): " + title);
-                ++skipped;
+                // Antivirus definitions are managed by Windows Security. Count
+                // only a single skip and announce it just once.
+                ++avSeen;
+                if (!avNoticeShown_) {
+                    avNoticeShown_ = true;
+                    notify(Phase::Downloading, L"Skipping the antivirus update...");
+                    log(L"Skipped antivirus update (handled automatically by Windows Security): " +
+                        title);
+                    log(L"NOTE: Microsoft Defender / antivirus definitions must be updated "
+                        L"manually in Windows Security.");
+                    ++skipped;
+                    totals_.skipped += 1;
+                    refreshFinished();
+                    notifyStats();
+                } else {
+                    log(L"Skipping additional antivirus update: " + title);
+                }
                 continue;
             }
 
             if (!acceptEula(update.get())) {
-                ++failed;
-                failureLog += L"- " + title + L": EULA not accepted.\r\n";
-                log(L"FAILED: " + title);
-                log(L"  Could not accept EULA.");
+                if (updateIsInstalled(update.get())) {
+                    markInstalled(title);
+                    continue;
+                }
+                markFailure(title, L"EULA not accepted");
+                log(L"FAILED: " + title + L" (could not accept EULA).");
                 continue;
             }
 
@@ -1085,17 +1157,38 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             const StepOutcome download =
                 downloadOne(session.get(), update.get(), updates.get(), i, title);
             if (!download.ok) {
-                ++failed;
-                failureLog += L"- " + title + L" (download): " + download.detail + L"\r\n";
-                continue;
+                // A failed download is only a failure if it is not installed and
+                // not already downloaded; otherwise continue to the install step.
+                if (!updateIsInstalled(update.get()) && !updateAlreadyDownloaded(update.get())) {
+                    markFailure(title, L"download — " + download.detail);
+                    log(L"FAILED (download): " + title + L" — " + download.detail);
+                    continue;
+                }
+                log(L"Download reported a problem but the update is already present: " + title);
+            } else {
+                ++downloaded;
+                totals_.downloaded += 1;
+                refreshFinished();
+                notifyStats();
             }
 
             notify(Phase::Installing, L"Installing update...");
             const StepOutcome install =
                 installOne(session.get(), update.get(), updates.get(), i, title);
             if (!install.ok) {
-                ++failed;
-                failureLog += L"- " + title + L" (install): " + install.detail + L"\r\n";
+                // Verify the final state before declaring a failure.
+                if (updateIsInstalled(update.get())) {
+                    markInstalled(title);
+                    log(L"  Verified installed despite a reported error.");
+                    if (install.rebootRequired) {
+                        rebootRequired = true;
+                        log(L"Restart required after installing: " + title);
+                        break;
+                    }
+                    continue;
+                }
+                markFailure(title, L"install — " + install.detail);
+                log(L"FAILED (install): " + title + L" — " + install.detail);
                 if (install.rebootRequired) {
                     rebootRequired = true;
                     log(L"Stopping remaining updates — a restart is required first.");
@@ -1104,7 +1197,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
                 continue;
             }
 
-            ++installed;
+            markInstalled(title);
             if (install.rebootRequired) {
                 rebootRequired = true;
                 log(L"Restart required after installing: " + title);
@@ -1112,12 +1205,58 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             }
         }
 
-        log(L"Summary: " + std::to_wstring(installed) + L" installed, " + std::to_wstring(failed) +
-            L" failed, " + std::to_wstring(skipped) + L" skipped.");
+        // Final-state verification: some failures are transient. Re-search and
+        // reclassify anything that is no longer pending as installed.
+        if (!failedTitles.empty()) {
+            log(L"Verifying final state of " + std::to_wstring(failedTitles.size()) +
+                L" failed update(s)...");
+            ComPtr<ISearchResult> verifySearch;
+            if (SUCCEEDED(searcher->Search(BStr(kSearchCriteria), verifySearch.put())) &&
+                verifySearch) {
+                ComPtr<IUpdateCollection> stillPending;
+                if (SUCCEEDED(verifySearch->get_Updates(stillPending.put())) && stillPending) {
+                    const long pendingCount = collectionCount(stillPending.get());
+                    std::vector<std::wstring> pendingTitles;
+                    pendingTitles.reserve(static_cast<size_t>(pendingCount));
+                    for (long i = 0; i < pendingCount; ++i) {
+                        pendingTitles.push_back(toLower(updateTitle(stillPending.get(), i)));
+                    }
+
+                    std::vector<std::wstring> stillFailed;
+                    for (const std::wstring& title : failedTitles) {
+                        const bool pending =
+                            std::find(pendingTitles.begin(), pendingTitles.end(), toLower(title)) !=
+                            pendingTitles.end();
+                        if (pending) {
+                            stillFailed.push_back(title);
+                        } else {
+                            log(L"  Verified installed (no longer pending): " + title);
+                            --failed;
+                            ++installed;
+                            totals_.failed = std::max(0, totals_.failed - 1);
+                            totals_.installed += 1;
+                        }
+                    }
+                    failedTitles = std::move(stillFailed);
+
+                    failureLog.clear();
+                    for (const std::wstring& title : failedTitles) {
+                        failureLog += L"- " + title + L"\r\n";
+                    }
+                    refreshFinished();
+                    notifyStats();
+                }
+            }
+        }
+
+        log(L"Summary: " + std::to_wstring(installed) + L" installed, " +
+            std::to_wstring(downloaded) + L" downloaded, " + std::to_wstring(skipped) +
+            L" skipped, " + std::to_wstring(failed) + L" failed.");
 
         result.updatesInstalled = static_cast<int>(installed);
         result.updatesFailed = static_cast<int>(failed);
         result.updatesSkipped = static_cast<int>(skipped);
+        result.updatesDownloaded = static_cast<int>(downloaded);
 
         if (rebootRequired) {
             notify(Phase::RebootRequired, L"Restarting to continue installing updates...");
@@ -1140,10 +1279,10 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             return result;
         }
 
-        // Only Defender/antivirus updates were left — treat as done.
-        if (skipped > 0 && failed == 0) {
+        // Only antivirus updates were left (now or in an earlier cycle) — done.
+        if (avSeen > 0 && failed == 0) {
             notify(Phase::UpToDate, L"This computer is up to date.");
-            log(L"Remaining updates are Defender/antivirus definitions (skipped).");
+            log(L"Remaining updates are antivirus definitions (skipped).");
             result.success = true;
             result.upToDate = true;
             return result;

@@ -8,6 +8,7 @@
 #endif
 
 #include "logger.hpp"
+#include "update.hpp"
 
 #include <windows.h>
 
@@ -34,56 +35,93 @@ private:
         WM_APP_STATS = WM_APP + 9
     };
 
-    static constexpr int kWidth = 720;
-    static constexpr int kHeight = 560;
-    static constexpr int kButtonHeight = 36;
-    static constexpr int kButtonWidth = 160;
+    static constexpr int kWidth = 780;
+    static constexpr int kHeight = 660;
+    static constexpr int kButtonHeight = 40;
+    static constexpr int kButtonWidth = 170;
+    static constexpr int kHeaderHeight = 100;
+    static constexpr int kStatCardCount = 6;
     static constexpr UINT_PTR kRebootTimerId = 1;
+    static constexpr UINT_PTR kAnimTimerId = 2;
+    static constexpr int kAnimIntervalMs = 40;
     static constexpr int kMaxTerminalChars = 24000;
     static constexpr int kMaxRebootCount = 5;
 
     HINSTANCE instance_;
     HWND hwnd_ = nullptr;
-    HWND titleLabel_ = nullptr;
+
+    HWND headerTitle_ = nullptr;
+    HWND headerSubtitle_ = nullptr;
     HWND phaseLabel_ = nullptr;
     HWND currentLabel_ = nullptr;
-    HWND statsLabel_ = nullptr;
     HWND progressBar_ = nullptr;
     HWND terminal_ = nullptr;
     HWND summaryLabel_ = nullptr;
     HWND uninstallButton_ = nullptr;
     HWND closeButton_ = nullptr;
+    HWND updateButton_ = nullptr;
+    HWND updateNoDriversButton_ = nullptr;
+
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;
     HFONT smallFont_ = nullptr;
     HFONT terminalFont_ = nullptr;
+    HFONT numberFont_ = nullptr;
+    HFONT captionFont_ = nullptr;
+    HFONT buttonFont_ = nullptr;
+
     HBRUSH bgBrush_ = nullptr;
     HBRUSH terminalBrush_ = nullptr;
     HBRUSH headerBrush_ = nullptr;
+    HBRUSH cardBrush_ = nullptr;
+    HPEN borderPen_ = nullptr;
+    HICON appIcon_ = nullptr;
+
+    RECT statsRect_{};
+    RECT terminalCardRect_{};
+    RECT summaryCardRect_{};
+    RECT spinnerRect_{};
+    int animFrame_ = 0;
+
     Logger logger_;
     std::wofstream logFile_;
     std::atomic<bool> running_{true};
     std::atomic<bool> finished_{false};
     std::atomic<bool> allowClose_{false};
     std::atomic<bool> uiDoneMode_{false};
+
     std::wstring lastStatus_ = L"Starting...";
     std::wstring lastPhase_ = L"Preparing";
     std::wstring lastCurrent_ = L"Waiting to begin...";
-    std::wstring lastStats_ = L"Found: 0   Installed: 0   Failed: 0";
+
+    UpdateStats stats_;    // owned/updated by the worker thread
+    UpdateStats uiStats_;  // snapshot rendered by the UI thread
+
     int lastPercent_ = 0;
     std::thread workerThread_;
     int rebootCountdown_ = 0;
     std::atomic<int> lastPostedPercent_{-1};
     std::atomic<unsigned long long> lastProgressPostMs_{0};
 
+    int runNumber_ = 0;
+    bool hadPendingRestart_ = false;
+    bool finalVerificationDone_ = false;
+    bool cleanupDone_ = false;
+    bool choosing_ = true;
+    bool updateWithoutDrivers_ = false;
+    std::wstring executionType_;
+    std::wstring postSummary_;
+
     bool elevateIfNeeded();
     bool ensureInternet();
     bool createUi();
     void layoutControls();
+    void startWorker();
+    void beginUpdate(bool withoutDrivers);
+    void runPostUpdateTasks();
     void setStatus(std::wstring message);
     void setPhase(std::wstring message);
     void setCurrent(std::wstring message);
-    void setStats(std::wstring message);
     void setProgressPercent(int percent);
     void appendLog(std::wstring message);
     void trimTerminalIfNeeded();
@@ -94,19 +132,17 @@ private:
     void showFinishedScreen(bool success, const std::wstring& detail);
     void requestReboot();
     void logSummary(const std::wstring& result);
-    void refreshStatsLabel();
     void showActionButtons(bool enabled);
     bool shouldPostProgress(int percent) const;
     void postProgress(int percent, std::wstring_view title);
 
-    int runNumber_ = 0;
-    int totalUpdatesFound_ = 0;
-    int totalUpdatesInstalled_ = 0;
-    int totalUpdatesFailed_ = 0;
-    bool hadPendingRestart_ = false;
-    bool finalVerificationDone_ = false;
-    bool cleanupDone_ = false;
-    std::wstring executionType_;
+    void paint();
+    void paintHeader(HDC hdc, int width);
+    void paintSpinner(HDC hdc);
+    void paintStats(HDC hdc);
+    void paintRoundRect(HDC hdc, const RECT& rect, int radius, HBRUSH fill);
+    void drawButton(const DRAWITEMSTRUCT* item);
+    static void applyWindowChrome(HWND hwnd);
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

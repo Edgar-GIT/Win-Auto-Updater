@@ -130,6 +130,7 @@ StateManager::State StateManager::load(std::wstring* error) const {
     }
 
     state.rebootCount = parseInt(content, L"\"rebootCount\"");
+    state.withoutDrivers = parseInt(content, L"\"withoutDrivers\"") != 0;
 
     return state;
 }
@@ -154,7 +155,8 @@ bool StateManager::save(const State& state, std::wstring* error) const {
 
     file << L"{\n";
     file << L"    \"phase\": \"" << state.phase << L"\",\n";
-    file << L"    \"rebootCount\": " << state.rebootCount << L"\n";
+    file << L"    \"rebootCount\": " << state.rebootCount << L",\n";
+    file << L"    \"withoutDrivers\": " << (state.withoutDrivers ? 1 : 0) << L"\n";
     file << L"}\n";
 
     return true;

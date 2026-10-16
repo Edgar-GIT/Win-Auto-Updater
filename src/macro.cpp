@@ -153,8 +153,15 @@ bool save(const std::filesystem::path& file, const std::vector<Event>& events) {
             line << L"C\t" << event.proc << L'\t' << event.cls << L'\t' << event.relX << L'\t'
                  << event.relY << L'\t' << (event.right ? L"R" : L"L") << L'\t' << event.title;
         } else {
+            // K  proc  cls  vk  flags  title
+            // flags: bits 1=ctrl 2=shift 4=alt 8=win
+            unsigned flags = 0;
+            if (event.ctrl) flags |= 1;
+            if (event.shift) flags |= 2;
+            if (event.alt) flags |= 4;
+            if (event.win) flags |= 8;
             line << L"K\t" << event.proc << L'\t' << event.cls << L'\t' << event.vk << L'\t'
-                 << event.title;
+                 << flags << L'\t' << event.title;
         }
         out << toUtf8(line.str()) << '\n';
     }
@@ -202,7 +209,17 @@ bool load(const std::filesystem::path& file, std::vector<Event>* events) {
             event.proc = parts[1];
             event.cls = parts[2];
             event.vk = static_cast<unsigned>(_wtoi(parts[3].c_str()));
-            event.title = parts.size() >= 5 ? parts[4] : L"";
+            // Support both new format (with flags) and old format (without)
+            if (parts.size() >= 6) {
+                unsigned flags = static_cast<unsigned>(_wtoi(parts[4].c_str()));
+                event.ctrl = (flags & 1) != 0;
+                event.shift = (flags & 2) != 0;
+                event.alt = (flags & 4) != 0;
+                event.win = (flags & 8) != 0;
+                event.title = parts[5];
+            } else {
+                event.title = parts.size() >= 5 ? parts[4] : L"";
+            }
         } else {
             continue;
         }

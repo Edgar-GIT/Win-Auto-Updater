@@ -29,6 +29,10 @@ struct Event {
     int relY = 0;        // Y relative to the window's top-left
     unsigned vk = 0;     // virtual key for Kind::Key
     bool right = false;  // right mouse button for Kind::Click
+    bool ctrl = false;   // Ctrl held when the key was pressed
+    bool shift = false;  // Shift held
+    bool alt = false;    // Alt held
+    bool win = false;    // Win held
 };
 
 std::filesystem::path filePath(const std::filesystem::path& executable);
@@ -67,6 +71,10 @@ private:
     HWND notify_ = nullptr;
     std::wstring ourProc_;
     bool active_ = false;
+    bool ctrlDown_ = false;
+    bool shiftDown_ = false;
+    bool altDown_ = false;
+    bool winDown_ = false;
     std::vector<Event> events_;
 };
 

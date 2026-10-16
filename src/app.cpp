@@ -852,6 +852,14 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
             ShowWindow(runTestsButton_, SW_HIDE);
         }
     }
+    if (monitorButton_) {
+        if (success) {
+            ShowWindow(monitorButton_, SW_SHOW);
+            EnableWindow(monitorButton_, TRUE);
+        } else {
+            ShowWindow(monitorButton_, SW_HIDE);
+        }
+    }
     if (reopenToggleButton_) {
         if (success) {
             // Reflect the real state of the logon task (it is not stored in memory
@@ -1742,6 +1750,33 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 case IDC_RECORD_MACRO:
                     toggleRecording();
                     return 0;
+                case IDC_MONITOR: {
+                    if (uiDoneMode_) {
+                        const std::filesystem::path base = Stress::toolsBaseDir();
+                        const std::filesystem::path ohm =
+                            base / L"OpenHardwareMonitor" / L"OpenHardwareMonitor.exe";
+                        std::error_code ec;
+                        if (std::filesystem::exists(ohm, ec)) {
+                            STARTUPINFOW si{};
+                            si.cb = sizeof(si);
+                            PROCESS_INFORMATION pi{};
+                            std::wstring cmd = L"\"" + ohm.wstring() + L"\"";
+                            std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+                            buf.push_back(L'\0');
+                            if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0,
+                                               nullptr, ohm.parent_path().c_str(), &si, &pi)) {
+                                CloseHandle(pi.hThread);
+                                CloseHandle(pi.hProcess);
+                                appendLog(L"OpenHardwareMonitor started.");
+                            } else {
+                                appendLog(L"Failed to start OpenHardwareMonitor.");
+                            }
+                        } else {
+                            appendLog(L"OpenHardwareMonitor not found: " + ohm.wstring());
+                        }
+                    }
+                    return 0;
+                }
                 case IDC_CLOSE_REOPEN:
                     if (allowClose_) {
                         closeAndReopen();

@@ -547,8 +547,8 @@ Result run(const Config& config, const Callbacks& callbacks) {
 
     status(L"Starting hardware monitoring...");
     if (config.openHardwareMonitor) {
-        start(L"OpenHardwareMonitor", base / L"OpenHardwareMonitor" / L"OpenHardwareMonitor.exe",
-              L"", false, false);
+        // OpenHardwareMonitor is NOT launched automatically anymore.
+        // It is launched on demand from the "Monitor" button in the done screen.
     }
     if (config.batteryCare && result.portable) {
         start(L"BatteryCare", base / L"batterycare" / L"BatteryCare.exe", L"", false, false);

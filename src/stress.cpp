@@ -59,18 +59,6 @@ std::wstring quote(const std::wstring& value) {
     return L"\"" + value + L"\"";
 }
 
-std::string toNarrow(const std::wstring& value) {
-    if (value.empty()) {
-        return {};
-    }
-    const int len = WideCharToMultiByte(CP_ACP, 0, value.c_str(), static_cast<int>(value.size()),
-                                        nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(len), '\0');
-    WideCharToMultiByte(CP_ACP, 0, value.c_str(), static_cast<int>(value.size()), out.data(), len,
-                        nullptr, nullptr);
-    return out;
-}
-
 std::filesystem::path currentExecutable() {
     wchar_t buffer[MAX_PATH]{};
     const DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
@@ -144,34 +132,6 @@ bool launchProcess(const std::wstring& exe, const std::wstring& args,
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return true;
-}
-
-std::wstring buildFurmarkArgs(const Stress::Config& config) {
-    std::wstring args = L"--demo furmark-gl --gpu-index " + std::to_wstring(config.furmarkGpuIndex) +
-                        L" --msaa " + std::to_wstring(config.furmarkMsaa) +
-                        L" --max-time " + std::to_wstring(config.furmarkMinutes * 60000) +
-                        L" --no-score-box --disable-logfile";
-    if (config.furmarkFullscreen) {
-        args += L" --fullscreen";
-    }
-    return args;
-}
-
-std::wstring buildDiskSpdArgs(const Stress::Config& config, const std::wstring& blockSize,
-                              const std::wstring& queue, const std::wstring& threads,
-                              const std::wstring& writePercent, bool random,
-                              const std::filesystem::path& target) {
-    if (!config.diskSpdArgs.empty()) {
-        return config.diskSpdArgs + L" " + quote(target.wstring());
-    }
-    std::wstring args = L"-c" + std::to_wstring(config.diskSpdSizeMb) + L"M -b" + blockSize +
-                        L" -d" + std::to_wstring(config.diskSpdSeconds) + L" -o" + queue + L" -t" +
-                        threads + L" -w" + writePercent + L" -W1 -S -g";
-    if (random) {
-        args += L" -r";
-    }
-    args += L" " + quote(target.wstring());
-    return args;
 }
 
 // Editable default for the UI Automation helper. On the target machine run
@@ -526,188 +486,47 @@ Result run(const Config& config, const Callbacks& callbacks) {
         return result;
     }
 
-    const auto start = [&](const std::wstring& label, const std::filesystem::path& exe,
-                           const std::wstring& args, bool hidden, bool wait,
-                           const std::filesystem::path& out = {}) {
-        if (!std::filesystem::exists(exe, ec)) {
-            log(L"Missing " + label + L": " + exe.wstring());
+    // Open the same GUI programs the manual .bat opens (OpenHardwareMonitor and
+    // BatteryCare are NOT included — they start from the "Monitor" button), then
+    // replay the recorded macro when one exists.
+    status(L"Opening the test tools...");
+    const auto launchTool = [&](const std::wstring& label, const std::wstring& relative) {
+        const std::filesystem::path tool = base / relative;
+        if (!std::filesystem::exists(tool, ec)) {
+            log(L"Missing " + label + L": " + tool.wstring());
             ++result.failed;
-            return false;
+            return;
         }
-        const bool ok = launchProcess(exe.wstring(), args, exe.parent_path(), hidden, wait, out);
-        if (ok) {
-            log(L"Launched " + label + L": " + exe.wstring());
+        if (launchProcess(tool.wstring(), L"", tool.parent_path(), false, false)) {
+            log(L"Launched " + label + L": " + tool.wstring());
             ++result.launched;
         } else {
-            log(L"Failed to launch " + label + L": " + exe.wstring());
+            log(L"Failed to launch " + label + L": " + tool.wstring());
             ++result.failed;
         }
-        return ok;
     };
+    launchTool(L"FurMark", L"FurMark2_x64\\FurMark_GUI.exe");
+    launchTool(L"Prime95", L"Prime95\\prime95.exe");
+    launchTool(L"CrystalDiskMark", L"CrystalDiskMark9\\DiskMark64.exe");
+    launchTool(L"powerMAX", L"powerMAX\\powerMAX.exe");
+    launchTool(L"MemTest", L"memtest.exe");
 
-    // When a recorded macro exists it drives the whole bench exactly like the
-    // manual flow (the .bat opens the tools, then the user clicks through them),
-    // so the tools are launched in their normal GUI mode and the macro performs
-    // every click. OpenHardwareMonitor and BatteryCare are NOT part of this:
-    // they are started on demand from the "Monitor" button.
+    // Give the windows a moment to appear before the macro starts clicking.
+    Sleep(4000);
+
     const auto exe = currentExecutable();
     const auto macroFile = Macro::filePath(exe);
     std::vector<Macro::Event> macro;
-    if (config.useMacro && config.runGuiAutomation &&
-        std::filesystem::exists(macroFile, ec) && Macro::load(macroFile, &macro) &&
-        !macro.empty()) {
-        status(L"Opening the test tools and replaying the recorded macro...");
-        const auto launchTool = [&](const std::wstring& label, const std::wstring& relative,
-                                    int instances) {
-            const std::filesystem::path tool = base / relative;
-            if (!std::filesystem::exists(tool, ec)) {
-                log(L"Missing " + label + L": " + tool.wstring());
-                ++result.failed;
-                return;
-            }
-            for (int i = 0; i < std::max(1, instances); ++i) {
-                if (launchProcess(tool.wstring(), L"", tool.parent_path(), false, false)) {
-                    log(L"Launched " + label + L": " + tool.wstring());
-                    ++result.launched;
-                } else {
-                    log(L"Failed to launch " + label + L": " + tool.wstring());
-                    ++result.failed;
-                }
-            }
-        };
-        if (config.furmark) {
-            launchTool(L"FurMark", L"FurMark2_x64\\FurMark_GUI.exe", 1);
-        }
-        if (config.prime95) {
-            launchTool(L"Prime95", L"Prime95\\prime95.exe", 1);
-        }
-        if (config.crystalDiskMarkGui) {
-            launchTool(L"CrystalDiskMark", config.cdmExe, config.cdmInstances);
-        }
-        if (config.powerMax) {
-            launchTool(L"powerMAX", config.powerMaxExe, config.powerMaxInstances);
-        }
-        if (config.memTest) {
-            launchTool(L"MemTest", config.memTestExe, config.memTestInstances);
-        }
-        // Give the windows a moment to appear before the macro starts clicking.
-        Sleep(4000);
+    if (config.useMacro && std::filesystem::exists(macroFile, ec) &&
+        Macro::load(macroFile, &macro) && !macro.empty()) {
+        status(L"Replaying the recorded macro...");
         log(L"Replaying macro (" + std::to_wstring(macro.size()) + L" step(s)) from " +
             macroFile.wstring());
         Macro::play(macro, log);
         log(L"Macro replay finished.");
-        result.ok = result.launched > 0;
-        result.message = L"Launched " + std::to_wstring(result.launched) + L" test(s), " +
-                         std::to_wstring(result.failed) + L" failed.";
-        log(result.message);
-        return result;
-    }
-
-    // No macro recorded: fall back to the command-line driven bench.
-    status(L"Starting FurMark (GPU stress)...");
-    if (config.furmark) {
-        start(L"FurMark", base / L"FurMark2_x64" / L"furmark.exe", buildFurmarkArgs(config), false,
-              false);
-    }
-
-    status(L"Starting Prime95 (CPU stress)...");
-    if (config.prime95) {
-        const auto primeExe = base / L"Prime95" / L"prime95.exe";
-        if (start(L"Prime95", primeExe, L"-t", true, false)) {
-            // Prime95 has no built-in total runtime; stop it after the configured time.
-            const int seconds = std::max(1, config.primeMinutes) * 60;
-            launchProcess(L"cmd.exe",
-                          L"/c timeout /t " + std::to_wstring(seconds) +
-                              L" /nobreak > nul & taskkill /IM prime95.exe /F",
-                          {}, true, false);
-            log(L"Prime95 will be stopped after " + std::to_wstring(config.primeMinutes) +
-                L" minutes.");
-        }
-    }
-
-    status(L"Running disk benchmark (DiskSpd)...");
-    if (config.diskSpd) {
-        const auto diskSpd =
-            base / L"CrystalDiskMark9" / L"CdmResource" / L"DiskSpd" / L"DiskSpd64.exe";
-        if (std::filesystem::exists(diskSpd, ec)) {
-            const std::filesystem::path target =
-                config.diskDrive + L"\\WinAutoUpdater_diskspd.dat";
-            const auto outDir = tempDir();
-            std::filesystem::create_directories(outDir, ec);
-
-            const std::vector<std::wstring> labels = {
-                L"SEQ1M Q8T1 read", L"SEQ1M Q8T1 write", L"RND4K Q32T1 read", L"RND4K Q32T1 write"};
-            const std::vector<std::wstring> blocks = {L"1M", L"1M", L"4K", L"4K"};
-            const std::vector<std::wstring> queues = {L"8", L"8", L"32", L"32"};
-            const std::vector<std::wstring> writes = {L"0", L"100", L"0", L"100"};
-            const std::vector<bool> randoms = {false, false, true, true};
-
-            // Serialize the four runs in a detached batch file so this thread
-            // does not block for minutes and so the runs never overlap.
-            const auto batch = outDir / L"diskspd_run.bat";
-            std::ofstream out(batch, std::ios::binary);
-            if (out.is_open()) {
-                out << "@echo off\r\n";
-                for (size_t i = 0; i < labels.size(); ++i) {
-                    const std::wstring args = buildDiskSpdArgs(config, blocks[i], queues[i], L"1",
-                                                               writes[i], randoms[i], target);
-                    const auto logFile = outDir / (L"diskspd_" + std::to_wstring(i + 1) + L".txt");
-                    out << "\"" << toNarrow(diskSpd.wstring()) << "\" " << toNarrow(args) << " > \""
-                        << toNarrow(logFile.wstring()) << "\" 2>&1\r\n";
-                }
-                out << "del /f /q \"" << toNarrow(target.wstring()) << "\" > nul 2>&1\r\n";
-                out.close();
-
-                if (launchProcess(L"cmd.exe", L"/c " + quote(batch.wstring()), {}, true, false)) {
-                    log(L"DiskSpd started in the background. Results: " + outDir.wstring());
-                    ++result.launched;
-                } else {
-                    log(L"Could not start the DiskSpd batch.");
-                    ++result.failed;
-                }
-            } else {
-                log(L"Could not write the DiskSpd batch file.");
-                ++result.failed;
-            }
-        } else {
-            log(L"Missing DiskSpd: " + diskSpd.wstring());
-            ++result.failed;
-        }
-    }
-
-    std::wstring guiOnly;
-    if (config.powerMax) {
-        guiOnly += L"powerMAX,";
-    }
-    if (config.memTest) {
-        guiOnly += L"MemTest,";
-    }
-    if (config.crystalDiskMarkGui) {
-        guiOnly += L"CrystalDiskMark,";
-    }
-    if (!guiOnly.empty()) {
-        guiOnly.pop_back();
-    }
-
-    if (config.runGuiAutomation && !guiOnly.empty()) {
-        status(L"Automating powerMAX / MemTest / CrystalDiskMark...");
-        const auto script = ensureUiScript(exe);
-        const auto ini = configPath(exe);
-        const auto outDir = tempDir();
-        std::filesystem::create_directories(outDir, ec);
-        const auto psLog = outDir / L"uia_stress.log";
-        const std::wstring psArgs =
-            L"-NoProfile -ExecutionPolicy Bypass -File " + quote(script.wstring()) +
-            L" -Mode run -Base " + quote(base.wstring()) + L" -Ini " + quote(ini.wstring()) +
-            L" -Only " + quote(guiOnly);
-        // Redirect stdout+stderr into the log so any PowerShell error is captured.
-        if (launchProcess(L"powershell.exe", psArgs, {}, true, false, psLog)) {
-            log(L"UI Automation helper started (log: " + psLog.wstring() + L").");
-            ++result.launched;
-        } else {
-            log(L"Could not start the UI Automation helper.");
-            ++result.failed;
-        }
+    } else {
+        log(L"No macro recorded yet. The tools are open — click \"Record macro\" in the "
+            L"app, do your clicks, then press F10.");
     }
 
     result.ok = result.launched > 0;

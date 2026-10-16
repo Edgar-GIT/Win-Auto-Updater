@@ -899,6 +899,9 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
             ShowWindow(monitorButton_, SW_HIDE);
         }
     }
+    if (openToolsButton_) {
+        ShowWindow(openToolsButton_, SW_HIDE);
+    }
     if (reopenToggleButton_) {
         if (success) {
             // Reflect the real state of the logon task (it is not stored in memory
@@ -1702,22 +1705,30 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
         DeleteObject(fillBrush);
         DeleteObject(borderPen);
 
-        // Label on the left.
+        // Right-aligned switch layout: [ label ......  ON/OFF  ( o ) ].
+        const int rightPad = 12;
+        const int trackH = 22;
+        const int trackW = 48;
+        const int trackTop = (r.top + r.bottom - trackH) / 2;
+        const int trackRight = r.right - rightPad;
+        const int trackLeft = trackRight - trackW;
+
+        const int badgeW = 42;
+        const int badgeRight = trackLeft - 8;
+        const int badgeLeft = badgeRight - badgeW;
+
+        // Label on the left, ending before the badge.
         wchar_t label[128]{};
         GetWindowTextW(item->hwndItem, label, 128);
         RECT textRect = r;
         textRect.left += 14;
-        textRect.right -= 74;
+        textRect.right = badgeLeft - 8;
         SelectObject(hdc, buttonFont_ ? buttonFont_ : smallFont_);
         SetTextColor(hdc, disabled ? RGB(152, 152, 152) : kTextPrimary);
         DrawTextW(hdc, label, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        // Switch track on the right.
-        const int trackH = 22;
-        const int trackW = 52;
-        const int trackTop = (r.top + r.bottom - trackH) / 2;
-        const int trackLeft = r.right - trackW - 12;
-        RECT track{trackLeft, trackTop, trackLeft + trackW, trackTop + trackH};
+        // Switch track.
+        RECT track{trackLeft, trackTop, trackRight, trackTop + trackH};
         HBRUSH trackBrush = CreateSolidBrush(on ? kGreen : RGB(209, 209, 209));
         HGDIOBJ oldTrackBrush = SelectObject(hdc, trackBrush);
         HPEN nullPen = CreatePen(PS_SOLID, 1, on ? kGreen : RGB(209, 209, 209));
@@ -1731,7 +1742,7 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
         // Knob.
         const int knobSize = 18;
         const int knobY = trackTop + (trackH - knobSize) / 2;
-        const int knobX = on ? (trackLeft + trackW - knobSize - 2) : (trackLeft + 2);
+        const int knobX = on ? (trackRight - knobSize - 2) : (trackLeft + 2);
         RECT knob{knobX, knobY, knobX + knobSize, knobY + knobSize};
         HBRUSH knobBrush = CreateSolidBrush(RGB(255, 255, 255));
         HGDIOBJ oldKnobBrush = SelectObject(hdc, knobBrush);
@@ -1742,9 +1753,7 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
         DeleteObject(knobBrush);
 
         // ON/OFF text badge to the left of the track.
-        RECT badge = r;
-        badge.left = r.right - 74 - 10;
-        badge.right = trackLeft - 6;
+        RECT badge{badgeLeft, r.top, badgeRight, r.bottom};
         SetTextColor(hdc, on ? kGreen : RGB(120, 120, 120));
         DrawTextW(hdc, on ? L"ON" : L"OFF", -1, &badge, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         return;

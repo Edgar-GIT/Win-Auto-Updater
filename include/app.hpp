@@ -71,6 +71,7 @@ private:
     HWND stressToggleButton_ = nullptr;
     HWND reopenToggleButton_ = nullptr;
     HWND monitorButton_ = nullptr;
+    HWND openToolsButton_ = nullptr;
 
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -144,6 +145,8 @@ private:
     void runPostUpdateTasks();
     void runStressTests();
     void runUiDump();
+    void launchMonitorTools();
+    void launchTestTools();
     void toggleRecording();
     void finishRecording();
     void applyHint(const std::wstring& hint);

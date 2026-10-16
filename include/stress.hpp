@@ -16,7 +16,7 @@ struct Config {
     bool diskSpd = true;
     bool memTest = true;
     bool powerMax = true;
-    bool crystalDiskMarkGui = false;
+    bool crystalDiskMarkGui = true;
     bool batteryCare = true;
 
     int furmarkMinutes = 15;

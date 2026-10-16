@@ -55,6 +55,33 @@ std::filesystem::path currentExecutable() {
     return std::filesystem::path(buffer);
 }
 
+// Launches one of the test tools in its own directory, invisible to the caller.
+bool launchToolProcess(const std::filesystem::path& tool, std::wstring* error) {
+    std::error_code ec;
+    if (!std::filesystem::exists(tool, ec)) {
+        if (error) {
+            *error = L"not found";
+        }
+        return false;
+    }
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring command = L"\"" + tool.wstring() + L"\"";
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    if (CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                       tool.parent_path().c_str(), &si, &pi) == 0) {
+        if (error) {
+            *error = L"CreateProcess failed (" + std::to_wstring(GetLastError()) + L")";
+        }
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
 bool isElevated() {
     BOOL elevated = FALSE;
     HANDLE token = nullptr;
@@ -185,14 +212,13 @@ int App::run() {
     // Progress sink is unused — progress goes only to the bar/label via postProgress.
     logger_.setProgressSink([](std::wstring_view) {});
 
-    // If a previous run was interrupted by a required restart, continue
-    // automatically instead of asking the user to choose a mode again.
+    // The mode chooser is always shown, even when a previous run was interrupted
+    // by a restart, so the user always has the "Install all updates" button.
     {
         StateManager stateManager;
         const auto savedState = stateManager.load();
         if (savedState.phase == L"waiting_reboot") {
-            appendLog(L"An interrupted update was found — continuing after the restart.");
-            beginUpdate(savedState.withoutDrivers);
+            appendLog(L"An interrupted update was found — click an update button to continue.");
         }
     }
 
@@ -451,6 +477,10 @@ bool App::createUi() {
         0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
 
+    openToolsButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Open test tools", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OPEN_TOOLS)), instance_, nullptr);
+
     stressToggleButton_ = CreateWindowExW(
         0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STRESS_TOGGLE)), instance_, nullptr);
@@ -488,6 +518,7 @@ bool App::createUi() {
         SendMessageW(dumpButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(recordButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(monitorButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(openToolsButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(stressToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(reopenToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
     }
@@ -561,8 +592,13 @@ void App::layoutControls() {
         if (stressToggleButton_) {
             MoveWindow(stressToggleButton_, centerX, 212 + 52 + 12 + 44 + 18, chooseW, 40, TRUE);
         }
+        const int toolRowY = 212 + 52 + 12 + 44 + 18 + 40 + 18;
+        const int toolHalfW = (chooseW - gap) / 2;
         if (monitorButton_) {
-            MoveWindow(monitorButton_, centerX, 212 + 52 + 12 + 44 + 18 + 40 + 18, chooseW, 36, TRUE);
+            MoveWindow(monitorButton_, centerX, toolRowY, toolHalfW, 36, TRUE);
+        }
+        if (openToolsButton_) {
+            MoveWindow(openToolsButton_, centerX + toolHalfW + gap, toolRowY, toolHalfW, 36, TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
@@ -1825,31 +1861,12 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 case IDC_RECORD_MACRO:
                     toggleRecording();
                     return 0;
-                case IDC_MONITOR: {
-                    const std::filesystem::path base = Stress::toolsBaseDir();
-                    const std::filesystem::path ohm =
-                        base / L"OpenHardwareMonitor" / L"OpenHardwareMonitor.exe";
-                    std::error_code ec;
-                    if (std::filesystem::exists(ohm, ec)) {
-                        STARTUPINFOW si{};
-                        si.cb = sizeof(si);
-                        PROCESS_INFORMATION pi{};
-                        std::wstring cmd = L"\"" + ohm.wstring() + L"\"";
-                        std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-                        buf.push_back(L'\0');
-                        if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0,
-                                           nullptr, ohm.parent_path().c_str(), &si, &pi)) {
-                            CloseHandle(pi.hThread);
-                            CloseHandle(pi.hProcess);
-                            appendLog(L"OpenHardwareMonitor started.");
-                        } else {
-                            appendLog(L"Failed to start OpenHardwareMonitor.");
-                        }
-                    } else {
-                        appendLog(L"OpenHardwareMonitor not found: " + ohm.wstring());
-                    }
+                case IDC_MONITOR:
+                    launchMonitorTools();
                     return 0;
-                }
+                case IDC_OPEN_TOOLS:
+                    launchTestTools();
+                    return 0;
                 case IDC_CLOSE_REOPEN:
                     if (allowClose_) {
                         closeAndReopen();

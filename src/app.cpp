@@ -543,26 +543,26 @@ void App::layoutControls() {
     spinnerRect_ = {width - 66, 34, width - 30, 70};
 
     if (choosing_) {
-        const int chooseW = 260;
-        const int chooseH = 46;
+        const int chooseW = 360;
         const int centerX = (width - chooseW) / 2;
         if (phaseLabel_) {
-            MoveWindow(phaseLabel_, margin, 150, contentW, 30, TRUE);
+            MoveWindow(phaseLabel_, margin, 140, contentW, 30, TRUE);
         }
         if (currentLabel_) {
-            MoveWindow(currentLabel_, margin, 186, contentW, 24, TRUE);
+            MoveWindow(currentLabel_, margin, 176, contentW, 24, TRUE);
         }
-        if (stressToggleButton_) {
-            MoveWindow(stressToggleButton_, centerX, 218, chooseW, 32, TRUE);
-        }
+        // The two update actions are the main call to action on this screen.
         if (updateButton_) {
-            MoveWindow(updateButton_, centerX, 262, chooseW, chooseH, TRUE);
+            MoveWindow(updateButton_, centerX, 212, chooseW, 52, TRUE);
         }
         if (updateNoDriversButton_) {
-            MoveWindow(updateNoDriversButton_, centerX, 262 + chooseH + 14, chooseW, chooseH, TRUE);
+            MoveWindow(updateNoDriversButton_, centerX, 212 + 52 + 12, chooseW, 44, TRUE);
+        }
+        if (stressToggleButton_) {
+            MoveWindow(stressToggleButton_, centerX, 212 + 52 + 12 + 44 + 18, chooseW, 40, TRUE);
         }
         if (monitorButton_) {
-            MoveWindow(monitorButton_, centerX, 262 + (chooseH + 14) * 2, chooseW, 34, TRUE);
+            MoveWindow(monitorButton_, centerX, 212 + 52 + 12 + 44 + 18 + 40 + 18, chooseW, 36, TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
@@ -585,8 +585,8 @@ void App::layoutControls() {
         const int monitorW = 120;
         const int runH = 46;
         const int runY = buttonY - kButtonHeight - 14;
-        const int reopenH = 32;
-        const int reopenW = 300;
+        const int reopenH = 40;
+        const int reopenW = 320;
         const int reopenY = runY - reopenH - 10;
         const int rowTotal = runW + dumpW + monitorW + gap * 2;
         const int rowStartX = (width - rowTotal) / 2;
@@ -1606,14 +1606,76 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
     RECT r = item->rcItem;
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
     const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+
+    // Toggles are drawn as a labelled switch: [ label ............ (ON)  o ].
+    if (item->CtlID == IDC_STRESS_TOGGLE || item->CtlID == IDC_REOPEN_TOGGLE) {
+        const bool on = item->CtlID == IDC_STRESS_TOGGLE ? autoStressAfterUpdate_
+                                                         : reopenAfterRestart_;
+        FillRect(hdc, &r, bgBrush_ ? bgBrush_ : static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        InflateRect(&r, -1, -1);
+        SetBkMode(hdc, TRANSPARENT);
+
+        // Card background + border so it reads as a control.
+        HBRUSH fillBrush = CreateSolidBrush(disabled ? RGB(245, 245, 245) : kCardColor);
+        HPEN borderPen = CreatePen(PS_SOLID, 1, on ? kAccent : RGB(200, 200, 200));
+        HGDIOBJ oldBrush = SelectObject(hdc, fillBrush);
+        HGDIOBJ oldPen = SelectObject(hdc, borderPen);
+        RoundRect(hdc, r.left, r.top, r.right, r.bottom, 10, 10);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(fillBrush);
+        DeleteObject(borderPen);
+
+        // Label on the left.
+        wchar_t label[128]{};
+        GetWindowTextW(item->hwndItem, label, 128);
+        RECT textRect = r;
+        textRect.left += 14;
+        textRect.right -= 74;
+        SelectObject(hdc, buttonFont_ ? buttonFont_ : smallFont_);
+        SetTextColor(hdc, disabled ? RGB(152, 152, 152) : kTextPrimary);
+        DrawTextW(hdc, label, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        // Switch track on the right.
+        const int trackH = 22;
+        const int trackW = 52;
+        const int trackTop = (r.top + r.bottom - trackH) / 2;
+        const int trackLeft = r.right - trackW - 12;
+        RECT track{trackLeft, trackTop, trackLeft + trackW, trackTop + trackH};
+        HBRUSH trackBrush = CreateSolidBrush(on ? kGreen : RGB(209, 209, 209));
+        HGDIOBJ oldTrackBrush = SelectObject(hdc, trackBrush);
+        HPEN nullPen = CreatePen(PS_SOLID, 1, on ? kGreen : RGB(209, 209, 209));
+        HGDIOBJ oldTrackPen = SelectObject(hdc, nullPen);
+        RoundRect(hdc, track.left, track.top, track.right, track.bottom, trackH / 2, trackH / 2);
+        SelectObject(hdc, oldTrackBrush);
+        SelectObject(hdc, oldTrackPen);
+        DeleteObject(trackBrush);
+        DeleteObject(nullPen);
+
+        // Knob.
+        const int knobSize = 18;
+        const int knobY = trackTop + (trackH - knobSize) / 2;
+        const int knobX = on ? (trackLeft + trackW - knobSize - 2) : (trackLeft + 2);
+        RECT knob{knobX, knobY, knobX + knobSize, knobY + knobSize};
+        HBRUSH knobBrush = CreateSolidBrush(RGB(255, 255, 255));
+        HGDIOBJ oldKnobBrush = SelectObject(hdc, knobBrush);
+        HGDIOBJ oldKnobPen = SelectObject(hdc, GetStockObject(NULL_PEN));
+        Ellipse(hdc, knob.left, knob.top, knob.right, knob.bottom);
+        SelectObject(hdc, oldKnobBrush);
+        SelectObject(hdc, oldKnobPen);
+        DeleteObject(knobBrush);
+
+        // ON/OFF text badge to the left of the track.
+        RECT badge = r;
+        badge.left = r.right - 74 - 10;
+        badge.right = trackLeft - 6;
+        SetTextColor(hdc, on ? kGreen : RGB(120, 120, 120));
+        DrawTextW(hdc, on ? L"ON" : L"OFF", -1, &badge, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+
     bool primary = item->CtlID == IDC_CLOSE || item->CtlID == IDC_UPDATE ||
                    item->CtlID == IDC_RUN_TESTS;
-    // The chooser toggle reads as "on" when auto-stress is selected.
-    if (item->CtlID == IDC_STRESS_TOGGLE) {
-        primary = autoStressAfterUpdate_;
-    } else if (item->CtlID == IDC_REOPEN_TOGGLE) {
-        primary = reopenAfterRestart_;
-    }
 
     FillRect(hdc, &r, bgBrush_ ? bgBrush_ : static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     InflateRect(&r, -1, -1);

@@ -56,6 +56,24 @@ std::wstring ownProcessName() {
     return std::filesystem::path(buffer).filename().wstring();
 }
 
+// Shell / launcher windows are not part of the stress bench: the app launches
+// the tools itself (see Stress::run), so clicks made while navigating folders
+// or a terminal are noise and must not be recorded.
+bool isNoiseProcess(const std::wstring& proc) {
+    if (proc.empty()) {
+        return true;
+    }
+    static const wchar_t* kNoise[] = {L"explorer.exe",   L"WindowsTerminal.exe", L"cmd.exe",
+                                      L"powershell.exe", L"pwsh.exe",            L"conhost.exe",
+                                      L"SearchHost.exe", L"SearchUI.exe"};
+    for (const wchar_t* name : kNoise) {
+        if (_wcsicmp(proc.c_str(), name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string toUtf8(const std::wstring& value) {
     if (value.empty()) {
         return {};
@@ -300,7 +318,7 @@ void Recorder::handleMouse(WPARAM message, const MSLLHOOKSTRUCT& info) {
     event.kind = Event::Kind::Click;
     event.right = message == WM_RBUTTONDOWN;
     captureTarget(info.pt, &event);
-    if (event.proc.empty() || _wcsicmp(event.proc.c_str(), ourProc_.c_str()) == 0) {
+    if (_wcsicmp(event.proc.c_str(), ourProc_.c_str()) == 0 || isNoiseProcess(event.proc)) {
         return;
     }
     events_.push_back(event);
@@ -367,7 +385,7 @@ void Recorder::handleKey(WPARAM message, const KBDLLHOOKSTRUCT& info) {
         event.cls = classNameOf(root);
         event.title = titleOf(root);
     }
-    if (event.proc.empty() || _wcsicmp(event.proc.c_str(), ourProc_.c_str()) == 0) {
+    if (_wcsicmp(event.proc.c_str(), ourProc_.c_str()) == 0 || isNoiseProcess(event.proc)) {
         return;
     }
     events_.push_back(event);
@@ -399,6 +417,11 @@ LRESULT CALLBACK Recorder::keyProc(int code, WPARAM wParam, LPARAM lParam) {
 
 void play(const std::vector<Event>& events, const std::function<void(const std::wstring&)>& log) {
     for (const auto& event : events) {
+        // Tolerate old recordings that captured shell/launcher clicks: the app
+        // launches the tools itself, so these steps are skipped.
+        if (isNoiseProcess(event.proc)) {
+            continue;
+        }
         HWND window = findWindow(event.proc, event.cls, 20000);
         if (window == nullptr) {
             if (log) {

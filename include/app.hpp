@@ -70,6 +70,7 @@ private:
     HWND recordButton_ = nullptr;
     HWND stressToggleButton_ = nullptr;
     HWND reopenToggleButton_ = nullptr;
+    HWND monitorButton_ = nullptr;
 
     HFONT titleFont_ = nullptr;
     HFONT uiFont_ = nullptr;

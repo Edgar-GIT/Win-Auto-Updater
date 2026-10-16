@@ -240,6 +240,7 @@ bool Recorder::start(HWND notify) {
     instance_ = this;
     events_.clear();
     ourProc_ = ownProcessName();
+    ctrlDown_ = shiftDown_ = altDown_ = winDown_ = false;
     active_ = true;
     HINSTANCE module = GetModuleHandleW(nullptr);
     mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, mouseProc, module, 0);
@@ -423,13 +424,64 @@ void play(const std::vector<Event>& events, const std::function<void(const std::
             inputs[1].mi.dwFlags = event.right ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
             SendInput(2, inputs, sizeof(INPUT));
         } else {
-            INPUT inputs[2]{};
-            inputs[0].type = INPUT_KEYBOARD;
-            inputs[0].ki.wVk = static_cast<WORD>(event.vk);
-            inputs[1].type = INPUT_KEYBOARD;
-            inputs[1].ki.wVk = static_cast<WORD>(event.vk);
-            inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-            SendInput(2, inputs, sizeof(INPUT));
+            // Key event: press modifiers first, then the key, then release in reverse
+            INPUT inputs[10]{};
+            int n = 0;
+            // Press modifiers (reverse order for proper Windows behavior)
+            if (event.win) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_LWIN;
+                n++;
+            }
+            if (event.alt) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_MENU;
+                n++;
+            }
+            if (event.shift) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_SHIFT;
+                n++;
+            }
+            if (event.ctrl) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_CONTROL;
+                n++;
+            }
+            // The key itself
+            inputs[n].type = INPUT_KEYBOARD;
+            inputs[n].ki.wVk = static_cast<WORD>(event.vk);
+            n++;
+            inputs[n].type = INPUT_KEYBOARD;
+            inputs[n].ki.wVk = static_cast<WORD>(event.vk);
+            inputs[n].ki.dwFlags = KEYEVENTF_KEYUP;
+            n++;
+            // Release modifiers (reverse of press)
+            if (event.ctrl) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_CONTROL;
+                inputs[n].ki.dwFlags = KEYEVENTF_KEYUP;
+                n++;
+            }
+            if (event.shift) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_SHIFT;
+                inputs[n].ki.dwFlags = KEYEVENTF_KEYUP;
+                n++;
+            }
+            if (event.alt) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_MENU;
+                inputs[n].ki.dwFlags = KEYEVENTF_KEYUP;
+                n++;
+            }
+            if (event.win) {
+                inputs[n].type = INPUT_KEYBOARD;
+                inputs[n].ki.wVk = VK_LWIN;
+                inputs[n].ki.dwFlags = KEYEVENTF_KEYUP;
+                n++;
+            }
+            SendInput(n, inputs, sizeof(INPUT));
         }
         Sleep(300);
     }

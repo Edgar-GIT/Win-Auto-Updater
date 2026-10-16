@@ -447,6 +447,10 @@ bool App::createUi() {
         0, L"BUTTON", L"Record macro", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RECORD_MACRO)), instance_, nullptr);
 
+    monitorButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Monitor", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
+
     stressToggleButton_ = CreateWindowExW(
         0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STRESS_TOGGLE)), instance_, nullptr);
@@ -483,6 +487,7 @@ bool App::createUi() {
         SendMessageW(closeReopenButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(dumpButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(recordButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
+        SendMessageW(monitorButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(stressToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(reopenToggleButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
     }
@@ -574,12 +579,13 @@ void App::layoutControls() {
     if (uiDoneMode_) {
         const int runW = 240;
         const int dumpW = 170;
+        const int monitorW = 120;
         const int runH = 46;
         const int runY = buttonY - kButtonHeight - 14;
         const int reopenH = 32;
         const int reopenW = 300;
         const int reopenY = runY - reopenH - 10;
-        const int rowTotal = runW + dumpW + gap;
+        const int rowTotal = runW + dumpW + monitorW + gap * 2;
         const int rowStartX = (width - rowTotal) / 2;
 
         if (phaseLabel_) {
@@ -599,6 +605,9 @@ void App::layoutControls() {
         }
         if (dumpButton_) {
             MoveWindow(dumpButton_, rowStartX + runW + gap, runY, dumpW, runH, TRUE);
+        }
+        if (monitorButton_) {
+            MoveWindow(monitorButton_, rowStartX + runW + dumpW + gap * 2, runY, monitorW, runH, TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);

@@ -1012,6 +1012,9 @@ void App::beginUpdate(bool withoutDrivers) {
     if (monitorButton_) {
         ShowWindow(monitorButton_, SW_HIDE);
     }
+    if (openToolsButton_) {
+        ShowWindow(openToolsButton_, SW_HIDE);
+    }
     if (terminal_) {
         ShowWindow(terminal_, SW_SHOW);
     }
@@ -1146,6 +1149,43 @@ void App::runUiDump() {
         }
         PostMessageW(hwnd_, WM_APP_DUMP, ok ? 1 : 0, 0);
     });
+}
+
+// "Monitor" — OpenHardwareMonitor, plus BatteryCare on laptops. These are not
+// part of the automated bench; they only run when the user asks for them.
+void App::launchMonitorTools() {
+    const std::filesystem::path base = Stress::toolsBaseDir();
+    const auto launch = [this](const std::wstring& label, const std::filesystem::path& tool) {
+        std::wstring error;
+        if (launchToolProcess(tool, &error)) {
+            appendLog(L"Started " + label + L".");
+        } else {
+            appendLog(L"Could not start " + label + L": " + error + L" (" + tool.wstring() + L")");
+        }
+    };
+    launch(L"OpenHardwareMonitor", base / L"OpenHardwareMonitor" / L"OpenHardwareMonitor.exe");
+    if (Stress::detectPortable()) {
+        launch(L"BatteryCare", base / L"batterycare" / L"BatteryCare.exe");
+    }
+}
+
+// "Open test tools" — starts the same GUI programs the manual .bat starts, so a
+// macro can be recorded with the tools already on screen.
+void App::launchTestTools() {
+    const std::filesystem::path base = Stress::toolsBaseDir();
+    const auto launch = [this](const std::wstring& label, const std::filesystem::path& tool) {
+        std::wstring error;
+        if (launchToolProcess(tool, &error)) {
+            appendLog(L"Started " + label + L".");
+        } else {
+            appendLog(L"Could not start " + label + L": " + error + L" (" + tool.wstring() + L")");
+        }
+    };
+    launch(L"FurMark", base / L"FurMark2_x64" / L"FurMark_GUI.exe");
+    launch(L"Prime95", base / L"Prime95" / L"prime95.exe");
+    launch(L"CrystalDiskMark", base / L"CrystalDiskMark9" / L"DiskMark64.exe");
+    launch(L"powerMAX", base / L"powerMAX" / L"powerMAX.exe");
+    launch(L"MemTest", base / L"memtest.exe");
 }
 
 void App::updateStressToggleText() {

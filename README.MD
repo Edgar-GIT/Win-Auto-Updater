@@ -115,6 +115,17 @@ build/SingleUpdate.exe
 
 ---
 
+## Stress macros (MacroHelper)
+
+GUI recording / replay for the hardware bench lives in `py_src/` (Python).  
+Build `MacroHelper.exe` on Windows (`py_src/build_exe.bat`) and deploy it next to
+`SingleUpdate.exe` with `macro.json`. Details: [`py_src/README.md`](py_src/README.md).
+
+`stress.ini`: `MacroEngine=python` (default), `MacroFile=macro.json`, `UseMacro=1`.  
+Set `MacroEngine=cpp` for the legacy in-process recorder (`macro.txt`).
+
+---
+
 ## License
 
 See [LICENSE](LICENSE).

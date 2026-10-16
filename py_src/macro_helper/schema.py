@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -198,10 +197,6 @@ def empty_document(dpi_awareness: str = "") -> MacroDocument:
         dpi_awareness=dpi_awareness,
         steps=[],
     )
-
-
-def clone_steps(steps: list[Step]) -> list[Step]:
-    return deepcopy(steps)
 
 
 def format_list(doc: MacroDocument) -> str:

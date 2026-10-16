@@ -304,34 +304,35 @@ def invoke_uia(hwnd: int, info: UiaInfo) -> bool:
         from pywinauto.controls.uiawrapper import UIAWrapper
 
         desktop = Desktop(backend="uia")
-        # Restrict search to the target top-level window when possible
         try:
             window = desktop.window(handle=hwnd)
         except Exception:
             window = desktop
 
-        criteria: dict = {}
+        # Try increasingly loose criteria so a rename-resistant automation_id wins,
+        # then visible Name, then Name+control_type.
+        attempts: list[dict] = []
         if info.automation_id:
-            criteria["auto_id"] = info.automation_id
+            attempts.append({"auto_id": info.automation_id})
+        if info.name and info.control_type:
+            attempts.append({"title": info.name, "control_type": info.control_type})
         if info.name:
-            criteria["title"] = info.name
-        if info.control_type:
-            # pywinauto control_type is like "Button"
-            criteria["control_type"] = info.control_type
+            attempts.append({"title": info.name})
 
-        # Descendants search with a short timeout
-        ctrl = window.child_window(**criteria)
-        ctrl.wait("exists enabled visible", timeout=3)
-        wrapper: UIAWrapper = ctrl.wrapper_object()
-        try:
-            wrapper.invoke()
-            return True
-        except Exception:
+        for criteria in attempts:
             try:
-                wrapper.click_input()
-                return True
+                ctrl = window.child_window(**criteria)
+                ctrl.wait("exists enabled visible ready", timeout=2)
+                wrapper: UIAWrapper = ctrl.wrapper_object()
+                try:
+                    wrapper.invoke()
+                    return True
+                except Exception:
+                    wrapper.click_input()
+                    return True
             except Exception:
-                return False
+                continue
+        return False
     except Exception:
         return False
 

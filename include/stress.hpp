@@ -33,12 +33,19 @@ struct Config {
 
     bool runGuiAutomation = true;
 
-    // When a recorded macro (macro.txt) exists and UseMacro=1, the GUI-only
-    // tools are launched directly and driven by replaying the macro instead of
-    // the single-button UI Automation heuristic.
+    // When a recorded macro exists and UseMacro=1, the GUI-only tools are
+    // launched directly and driven by replaying the macro instead of the
+    // single-button UI Automation heuristic.
     bool useMacro = true;
+    // "python" (default) → MacroHelper.exe + macro.json; "cpp" → legacy Macro::play
+    // + macro.txt. Recording follows the same switch.
+    std::wstring macroEngine = L"python";
+    // Macro file for the python engine. Default name is macro.json on the Desktop
+    // (easy to find after recording). Absolute paths are honored; relative paths
+    // other than the bare default resolve next to SingleUpdate.exe (USB deploy).
+    std::wstring macroFile = L"macro.json";
     // Starts the bench automatically right after a successful update, so the
-    // caller only has to deploy SingleUpdate.exe + macro.txt.
+    // caller only has to deploy SingleUpdate.exe + MacroHelper.exe + macro.json.
     bool autoRunStress = true;
     std::wstring powerMaxExe = L"powerMAX\\powerMAX.exe";
     int powerMaxInstances = 1;
@@ -66,13 +73,21 @@ struct Result {
 // writes a commented template when the file does not exist yet.
 Config loadConfig(const std::filesystem::path& executable);
 
-// Launches the whole bench. Blocking; call from a worker thread.
-Result run(const Config& config, const Callbacks& callbacks);
+// Launches the whole bench (tools + optional macro replay). Blocking; worker thread.
+Result run(const Config& config, const Callbacks& callbacks, bool playMacro = true);
+
+// Opens the five GUI stress tools only (no macro). MemTest is started last and
+// brought to the foreground so it is usable without hunting the taskbar.
+Result launchTools(const Config& config, const Callbacks& callbacks);
 
 bool detectPortable();
 std::filesystem::path toolsBaseDir();
+std::filesystem::path desktopDir();
 std::filesystem::path configPath(const std::filesystem::path& executable);
 std::filesystem::path scriptPath(const std::filesystem::path& executable);
+std::filesystem::path macroHelperPath(const std::filesystem::path& executable);
+std::filesystem::path macroFilePath(const std::filesystem::path& executable,
+                                    const Config& config);
 
 // Writes stress.ini and uia_stress.ps1 next to the executable when missing so
 // the user can deploy the app and tune it without a rebuild.

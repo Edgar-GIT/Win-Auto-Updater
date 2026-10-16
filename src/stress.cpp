@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <functional>
+#include <string>
 #include <vector>
 
 namespace {
@@ -79,9 +81,10 @@ std::filesystem::path tempDir() {
 
 // Launches a process. When stdoutFile is set the child's stdout/stderr are
 // redirected there; when wait is true the call blocks until the child exits.
+// When exitCode is non-null and wait is true, receives the process exit code.
 bool launchProcess(const std::wstring& exe, const std::wstring& args,
                    const std::filesystem::path& workDir, bool hidden, bool wait,
-                   const std::filesystem::path& stdoutFile = {}) {
+                   const std::filesystem::path& stdoutFile = {}, DWORD* exitCode = nullptr) {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
@@ -128,10 +131,58 @@ bool launchProcess(const std::wstring& exe, const std::wstring& args,
 
     if (wait) {
         WaitForSingleObject(pi.hProcess, INFINITE);
+        if (exitCode != nullptr) {
+            DWORD code = 1;
+            if (GetExitCodeProcess(pi.hProcess, &code) == 0) {
+                code = 1;
+            }
+            *exitCode = code;
+        }
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return true;
+}
+
+std::wstring fromUtf8(const std::string& value) {
+    if (value.empty()) {
+        return {};
+    }
+    const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()),
+                                         nullptr, 0);
+    if (size <= 0) {
+        return {};
+    }
+    std::wstring result(static_cast<size_t>(size), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), result.data(),
+                        size);
+    return result;
+}
+
+void forwardFileLines(const std::filesystem::path& file,
+                      const std::function<void(const std::wstring&)>& log) {
+    if (!log) {
+        return;
+    }
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        return;
+    }
+    std::string raw;
+    while (std::getline(in, raw)) {
+        if (!raw.empty() && raw.back() == '\r') {
+            raw.pop_back();
+        }
+        if (raw.empty()) {
+            continue;
+        }
+        log(fromUtf8(raw));
+    }
+}
+
+bool usePythonMacroEngine(const Stress::Config& config) {
+    const std::wstring engine = lower(trim(config.macroEngine));
+    return engine.empty() || engine == L"python" || engine == L"py" || engine == L"helper";
 }
 
 // Editable default for the UI Automation helper. On the target machine run
@@ -330,7 +381,7 @@ bool detectPortable() {
     return status.BatteryFlag != 128 && status.BatteryFlag != 255;
 }
 
-std::filesystem::path toolsBaseDir() {
+std::filesystem::path desktopDir() {
     PWSTR path = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &path)) || path == nullptr) {
         if (path) {
@@ -340,6 +391,14 @@ std::filesystem::path toolsBaseDir() {
     }
     std::filesystem::path desktop(path);
     CoTaskMemFree(path);
+    return desktop;
+}
+
+std::filesystem::path toolsBaseDir() {
+    const auto desktop = desktopDir();
+    if (desktop.empty()) {
+        return {};
+    }
     return desktop / L"programas de teste";
 }
 
@@ -351,6 +410,35 @@ std::filesystem::path scriptPath(const std::filesystem::path& executable) {
     return executable.parent_path() / L"uia_stress.ps1";
 }
 
+std::filesystem::path macroHelperPath(const std::filesystem::path& executable) {
+    return executable.parent_path() / L"MacroHelper.exe";
+}
+
+std::filesystem::path macroFilePath(const std::filesystem::path& executable,
+                                    const Config& config) {
+    if (!usePythonMacroEngine(config)) {
+        return Macro::filePath(executable);
+    }
+    std::filesystem::path name = config.macroFile.empty() ? L"macro.json" : config.macroFile;
+    if (name.is_absolute()) {
+        return name;
+    }
+    // Default bare "macro.json" → Desktop (visible after F10). Any other relative
+    // name stays next to the exe so a USB deploy can pin MacroFile=macro.json
+    // beside SingleUpdate by using an absolute path or copying the Desktop file.
+    // Prefer: if a copy already exists next to the exe (pen), use that for replay.
+    const auto besideExe = executable.parent_path() / name;
+    std::error_code ec;
+    if (std::filesystem::exists(besideExe, ec)) {
+        return besideExe;
+    }
+    const auto desktop = desktopDir();
+    if (!desktop.empty() && (name == L"macro.json" || name.filename() == L"macro.json")) {
+        return desktop / name.filename();
+    }
+    return besideExe;
+}
+
 Config loadConfig(const std::filesystem::path& executable) {
     Config config;
     const auto path = configPath(executable);
@@ -360,15 +448,20 @@ Config loadConfig(const std::filesystem::path& executable) {
         std::wofstream out(path);
         if (out.is_open()) {
             out << L"; Win Auto Updater stress-test configuration\n\n";
-            out << L"; When UseMacro=1 and a macro.txt was recorded next to the app, the\n";
+            out << L"; When UseMacro=1 and a macro was recorded next to the app, the\n";
             out << L"; stress run opens the same programs as the manual .bat (FurMark,\n";
             out << L"; Prime95, CrystalDiskMark, powerMAX, MemTest) and replays the macro.\n";
             out << L"; OpenHardwareMonitor and BatteryCare are started from the Monitor\n";
             out << L"; button only. Tools are expected in Desktop\\programas de teste.\n\n";
             out << L"; Run the test bench automatically after a successful update.\n";
             out << L"AutoRunStress=1\n\n";
-            out << L"; Replay macro.txt instead of using the .bat flow.\n";
+            out << L"; Replay the recorded macro (MacroHelper / Macro::play) after launch.\n";
             out << L"UseMacro=1\n";
+            out << L"; Macro engine: python (MacroHelper.exe + macro.json) or cpp (legacy).\n";
+            out << L"MacroEngine=python\n";
+            out << L"; Macro file: default macro.json is recorded on the Desktop. If the same\n";
+            out << L"; file also exists next to SingleUpdate.exe (USB), replay prefers that copy.\n";
+            out << L"MacroFile=macro.json\n";
         }
         return config;
     }
@@ -425,12 +518,66 @@ Config loadConfig(const std::filesystem::path& executable) {
         else if (key == L"crystaldiskmark") config.crystalDiskMarkGui = parseBool(value, config.crystalDiskMarkGui);
         else if (key == L"runguiautomation") config.runGuiAutomation = parseBool(value, config.runGuiAutomation);
         else if (key == L"usemacro") config.useMacro = parseBool(value, config.useMacro);
+        else if (key == L"macroengine") config.macroEngine = value;
+        else if (key == L"macrofile") config.macroFile = value;
         else if (key == L"autorunstress") config.autoRunStress = parseBool(value, config.autoRunStress);
     }
     return config;
 }
 
-Result run(const Config& config, const Callbacks& callbacks) {
+namespace {
+
+// MemTest has no taskbar button on some builds — bring its top-level window forward
+// after everything else has started so the user (or the macro) can reach it.
+void focusProcessWindows(const std::wstring& processName) {
+    struct Ctx {
+        std::wstring want;
+        HWND best = nullptr;
+    } ctx{processName, nullptr};
+
+    EnumWindows(
+        [](HWND window, LPARAM param) -> BOOL {
+            auto* c = reinterpret_cast<Ctx*>(param);
+            if (IsWindowVisible(window) == 0) {
+                return TRUE;
+            }
+            DWORD pid = 0;
+            GetWindowThreadProcessId(window, &pid);
+            if (pid == 0) {
+                return TRUE;
+            }
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (process == nullptr) {
+                return TRUE;
+            }
+            wchar_t buffer[MAX_PATH]{};
+            DWORD size = MAX_PATH;
+            std::wstring name;
+            if (QueryFullProcessImageNameW(process, 0, buffer, &size) != 0) {
+                name = std::filesystem::path(buffer).filename().wstring();
+            }
+            CloseHandle(process);
+            if (_wcsicmp(name.c_str(), c->want.c_str()) != 0) {
+                return TRUE;
+            }
+            c->best = window;
+            return TRUE;  // keep going — last match wins (most recently created often last)
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+
+    if (ctx.best == nullptr) {
+        return;
+    }
+    ShowWindow(ctx.best, SW_RESTORE);
+    BringWindowToTop(ctx.best);
+    SetForegroundWindow(ctx.best);
+    SetWindowPos(ctx.best, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+}
+
+}  // namespace
+
+Result launchTools(const Config& /*config*/, const Callbacks& callbacks) {
     Result result;
     result.portable = detectPortable();
 
@@ -456,9 +603,8 @@ Result run(const Config& config, const Callbacks& callbacks) {
         return result;
     }
 
-    // Open the same GUI programs the manual .bat opens (OpenHardwareMonitor and
-    // BatteryCare are NOT included — they start from the "Monitor" button), then
-    // replay the recorded macro when one exists.
+    // Same order as the manual .bat. MemTest is intentionally last and then
+    // forced to the foreground (it often has no taskbar button).
     status(L"Opening the test tools...");
     const auto launchTool = [&](const std::wstring& label, const std::wstring& relative) {
         const std::filesystem::path tool = base / relative;
@@ -476,33 +622,108 @@ Result run(const Config& config, const Callbacks& callbacks) {
         }
     };
     launchTool(L"FurMark", L"FurMark2_x64\\FurMark_GUI.exe");
+    Sleep(400);
     launchTool(L"Prime95", L"Prime95\\prime95.exe");
+    Sleep(400);
     launchTool(L"CrystalDiskMark", L"CrystalDiskMark9\\DiskMark64.exe");
+    Sleep(400);
     launchTool(L"powerMAX", L"powerMAX\\powerMAX.exe");
+    Sleep(400);
     launchTool(L"MemTest", L"memtest.exe");
 
-    // Give the windows a moment to appear before the macro starts clicking.
-    Sleep(4000);
-
-    const auto exe = currentExecutable();
-    const auto macroFile = Macro::filePath(exe);
-    std::vector<Macro::Event> macro;
-    if (config.useMacro && std::filesystem::exists(macroFile, ec) &&
-        Macro::load(macroFile, &macro) && !macro.empty()) {
-        status(L"Replaying the recorded macro...");
-        log(L"Replaying macro (" + std::to_wstring(macro.size()) + L" step(s)) from " +
-            macroFile.wstring());
-        Macro::play(macro, log);
-        log(L"Macro replay finished.");
-    } else {
-        log(L"No macro recorded yet. The tools are open — click \"Record macro\" in the "
-            L"app, do your clicks, then press F10.");
-    }
+    // Let MemTest's window appear, then stack it on top.
+    Sleep(1500);
+    focusProcessWindows(L"memtest.exe");
+    log(L"MemTest brought to foreground (started last).");
 
     result.ok = result.launched > 0;
     result.message = L"Launched " + std::to_wstring(result.launched) + L" test(s), " +
                      std::to_wstring(result.failed) + L" failed.";
     log(result.message);
+    return result;
+}
+
+Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
+    Result result = launchTools(config, callbacks);
+
+    const auto log = [&](const std::wstring& m) {
+        if (callbacks.log) {
+            callbacks.log(m);
+        }
+    };
+    const auto status = [&](const std::wstring& m) {
+        if (callbacks.status) {
+            callbacks.status(m);
+        }
+    };
+
+    if (!playMacro) {
+        return result;
+    }
+
+    // Extra settle time before the macro starts clicking (FurMark can be slow).
+    Sleep(2500);
+
+    std::error_code ec;
+    const auto exe = currentExecutable();
+    if (!config.useMacro) {
+        log(L"UseMacro=0 — tools launched, macro replay skipped.");
+    } else if (usePythonMacroEngine(config)) {
+        const auto helper = macroHelperPath(exe);
+        const auto macroFile = macroFilePath(exe, config);
+        if (!std::filesystem::exists(helper, ec)) {
+            log(L"MacroHelper.exe not found next to SingleUpdate.exe (" + helper.wstring() +
+                L"). Deploy MacroHelper.exe or set MacroEngine=cpp.");
+        } else if (!std::filesystem::exists(macroFile, ec)) {
+            log(L"No macro recorded yet (" + macroFile.wstring() +
+                L"). Click \"Record macro\", capture the clicks, then press F10.");
+        } else {
+            status(L"Replaying the recorded macro (MacroHelper)...");
+            log(L"Replaying macro via MacroHelper: " + macroFile.wstring());
+            const auto outLog = tempDir() / L"macro_helper_stdout.txt";
+            std::filesystem::create_directories(outLog.parent_path(), ec);
+            DeleteFileW(outLog.wstring().c_str());
+            const std::wstring args = L"--play " + quote(macroFile.wstring());
+            DWORD exitCode = 1;
+            if (!launchProcess(helper.wstring(), args, helper.parent_path(), true, true, outLog,
+                               &exitCode)) {
+                log(L"Failed to launch MacroHelper.exe.");
+            } else {
+                std::error_code sizeEc;
+                const auto stdoutSize = std::filesystem::file_size(outLog, sizeEc);
+                if (!sizeEc && stdoutSize > 0) {
+                    forwardFileLines(outLog, log);
+                } else {
+                    const auto sidecar = std::filesystem::path(macroFile.wstring() + L".log");
+                    if (std::filesystem::exists(sidecar, ec)) {
+                        log(L"MacroHelper stdout empty — reading " + sidecar.wstring());
+                        forwardFileLines(sidecar, log);
+                    }
+                }
+                if (exitCode == 0) {
+                    log(L"Macro replay finished successfully.");
+                } else {
+                    log(L"Macro replay finished with errors (exit " + std::to_wstring(exitCode) +
+                        L").");
+                }
+            }
+        }
+    } else {
+        const auto macroFile = Macro::filePath(exe);
+        std::vector<Macro::Event> macro;
+        if (std::filesystem::exists(macroFile, ec) && Macro::load(macroFile, &macro) &&
+            !macro.empty()) {
+            status(L"Replaying the recorded macro (C++)...");
+            log(L"Replaying macro (" + std::to_wstring(macro.size()) + L" step(s)) from " +
+                macroFile.wstring());
+            Macro::play(macro, log);
+            log(L"Macro replay finished.");
+        } else {
+            log(L"No macro recorded yet. The tools are open — click \"Record macro\" in the "
+                L"app, do your clicks, then press F10.");
+        }
+    }
+
     return result;
 }
 

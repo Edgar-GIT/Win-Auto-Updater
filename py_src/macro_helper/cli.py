@@ -67,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .stdio_fix import ensure_stdio, hide_console_window
+
+    ensure_stdio()
+
     args = build_parser().parse_args(argv)
     macro = Path(args.macro) if args.macro else _default_macro_path()
 
@@ -92,21 +96,20 @@ def main(argv: list[str] | None = None) -> int:
     from .dpi import enable_dpi_awareness
 
     dpi = enable_dpi_awareness()
-    print(f"DPI awareness: {dpi}", flush=True)
 
     if args.list is not None:
         path = Path(args.list) if args.list else macro
         from .schema import format_list, load_macro
 
+        print(f"DPI awareness: {dpi}", flush=True)
         doc = load_macro(path)
         print(format_list(doc))
         return 0
 
     if args.record:
+        hide_console_window()
         from .gui import run_record_gui
 
-        print(f"Recording UI — macro file: {macro}", flush=True)
-        print("Run as Administrator if target apps are elevated.", flush=True)
         return run_record_gui(macro)
 
     # --play
@@ -115,10 +118,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Macro file not found: {path}", file=sys.stderr)
         return 1
 
+    print(f"DPI awareness: {dpi}", flush=True)
+
+    # Sidecar log next to the macro so SingleUpdate / the user can inspect failures
+    # even if the stdout pipe is missing (noconsole builds).
+    log_path = path.with_suffix(path.suffix + ".log")
+    log_lines: list[str] = []
+
+    def _tee(message: str) -> None:
+        log_lines.append(message)
+
     from .replay import launch_stress_tools, play_file
 
     if args.replay_launch:
-        n = launch_stress_tools()
+        n = launch_stress_tools(log=_tee)
         if n == 0:
             print("No stress tools launched — aborting play.", file=sys.stderr)
             return 1
@@ -127,7 +140,14 @@ def main(argv: list[str] | None = None) -> int:
         path,
         window_timeout_s=float(args.timeout),
         on_fail=args.on_fail,
+        log=_tee,
     )
+    try:
+        log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+        print(f"Wrote replay log: {log_path}", flush=True)
+    except Exception as exc:
+        print(f"Could not write replay log: {exc}", flush=True)
+
     if report.total == 0:
         return 1
     return 0 if report.failed == 0 else 1

@@ -13,3 +13,16 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 compile_commands.json
+
+# Python MacroHelper
+py_src/.venv/
+py_src/venv/
+py_src/__pycache__/
+py_src/**/__pycache__/
+py_src/*.egg-info/
+py_src/dist/
+py_src/build/
+py_src/*.spec.bak
+macro.json
+macro.json.log
+macro.txt

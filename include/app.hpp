@@ -144,6 +144,7 @@ private:
     void beginUpdate(bool withoutDrivers);
     void runPostUpdateTasks();
     void runStressTests();
+    void openTestTools();
     void runUiDump();
     void launchMonitorTools();
     void toggleRecording();

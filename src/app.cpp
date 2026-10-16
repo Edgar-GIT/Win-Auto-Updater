@@ -478,7 +478,7 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
 
     openToolsButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Run stress tests", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Open test tools", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OPEN_TOOLS)), instance_, nullptr);
 
     stressToggleButton_ = CreateWindowExW(
@@ -592,13 +592,21 @@ void App::layoutControls() {
         if (stressToggleButton_) {
             MoveWindow(stressToggleButton_, centerX, 212 + 52 + 12 + 44 + 18, chooseW, 40, TRUE);
         }
+        // Open tools (no macro) | Run stress tests (tools + macro) | Monitor
         const int toolRowY = 212 + 52 + 12 + 44 + 18 + 40 + 18;
-        const int toolHalfW = (chooseW - gap) / 2;
-        if (monitorButton_) {
-            MoveWindow(monitorButton_, centerX, toolRowY, toolHalfW, 36, TRUE);
-        }
+        const int toolThirdW = (chooseW - gap * 2) / 3;
         if (openToolsButton_) {
-            MoveWindow(openToolsButton_, centerX + toolHalfW + gap, toolRowY, toolHalfW, 36, TRUE);
+            ShowWindow(openToolsButton_, SW_SHOW);
+            MoveWindow(openToolsButton_, centerX, toolRowY, toolThirdW, 36, TRUE);
+        }
+        if (runTestsButton_) {
+            ShowWindow(runTestsButton_, SW_SHOW);
+            EnableWindow(runTestsButton_, TRUE);
+            MoveWindow(runTestsButton_, centerX + toolThirdW + gap, toolRowY, toolThirdW, 36, TRUE);
+        }
+        if (monitorButton_) {
+            MoveWindow(monitorButton_, centerX + (toolThirdW + gap) * 2, toolRowY, toolThirdW, 36,
+                       TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
@@ -616,15 +624,16 @@ void App::layoutControls() {
     }
 
     if (uiDoneMode_) {
-        const int runW = 240;
-        const int dumpW = 170;
-        const int monitorW = 120;
+        const int openW = 170;
+        const int runW = 200;
+        const int monitorW = 110;
+        const int dumpW = 130;
         const int runH = 46;
         const int runY = buttonY - kButtonHeight - 14;
         const int reopenH = 40;
         const int reopenW = 320;
         const int reopenY = runY - reopenH - 10;
-        const int rowTotal = runW + dumpW + monitorW + gap * 2;
+        const int rowTotal = openW + runW + monitorW + dumpW + gap * 3;
         const int rowStartX = (width - rowTotal) / 2;
 
         if (phaseLabel_) {
@@ -639,14 +648,19 @@ void App::layoutControls() {
         if (reopenToggleButton_) {
             MoveWindow(reopenToggleButton_, (width - reopenW) / 2, reopenY, reopenW, reopenH, TRUE);
         }
-        if (runTestsButton_) {
-            MoveWindow(runTestsButton_, rowStartX, runY, runW, runH, TRUE);
+        if (openToolsButton_) {
+            MoveWindow(openToolsButton_, rowStartX, runY, openW, runH, TRUE);
         }
-        if (dumpButton_) {
-            MoveWindow(dumpButton_, rowStartX + runW + gap, runY, dumpW, runH, TRUE);
+        if (runTestsButton_) {
+            MoveWindow(runTestsButton_, rowStartX + openW + gap, runY, runW, runH, TRUE);
         }
         if (monitorButton_) {
-            MoveWindow(monitorButton_, rowStartX + runW + dumpW + gap * 2, runY, monitorW, runH, TRUE);
+            MoveWindow(monitorButton_, rowStartX + openW + runW + gap * 2, runY, monitorW, runH,
+                       TRUE);
+        }
+        if (dumpButton_) {
+            MoveWindow(dumpButton_, rowStartX + openW + runW + monitorW + gap * 3, runY, dumpW, runH,
+                       TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
@@ -887,8 +901,18 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         if (success) {
             ShowWindow(runTestsButton_, SW_SHOW);
             EnableWindow(runTestsButton_, TRUE);
+            SetWindowTextW(runTestsButton_, L"Run stress tests");
         } else {
             ShowWindow(runTestsButton_, SW_HIDE);
+        }
+    }
+    if (openToolsButton_) {
+        if (success) {
+            ShowWindow(openToolsButton_, SW_SHOW);
+            EnableWindow(openToolsButton_, TRUE);
+            SetWindowTextW(openToolsButton_, L"Open test tools");
+        } else {
+            ShowWindow(openToolsButton_, SW_HIDE);
         }
     }
     if (monitorButton_) {
@@ -898,9 +922,6 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         } else {
             ShowWindow(monitorButton_, SW_HIDE);
         }
-    }
-    if (openToolsButton_) {
-        ShowWindow(openToolsButton_, SW_HIDE);
     }
     if (reopenToggleButton_) {
         if (success) {
@@ -1084,12 +1105,11 @@ void App::runStressTests() {
     }
     if (openToolsButton_) {
         EnableWindow(openToolsButton_, FALSE);
-        SetWindowTextW(openToolsButton_, L"Tests running...");
     }
     if (summaryLabel_) {
         SetWindowTextW(summaryLabel_,
                        (doneSummary_ + L"\r\n\r\nStress tests:\r\nLaunching hardware test "
-                                        L"bench...").c_str());
+                                        L"bench + macro...").c_str());
     }
 
     if (stressThread_.joinable()) {
@@ -1116,13 +1136,64 @@ void App::runStressTests() {
             post(L"• Display: " + displayDetail, false);
 
             const auto config = Stress::loadConfig(currentExecutable());
-            const Stress::Result result = Stress::run(config, callbacks);
+            const Stress::Result result = Stress::run(config, callbacks, true);
             post(L"Done. " + result.message, true);
         } catch (const std::exception& ex) {
             const std::string what = ex.what();
             post(L"Stress tests failed: " + std::wstring(what.begin(), what.end()), true);
         } catch (...) {
             post(L"Stress tests failed with an unknown error.", true);
+        }
+    });
+}
+
+void App::openTestTools() {
+    if (stressRunning_ || dumping_) {
+        return;
+    }
+    if (recording_) {
+        // Keep recording — opening tools is part of the capture workflow.
+    }
+    stressRunning_ = true;
+    stressLog_.clear();
+
+    if (openToolsButton_) {
+        EnableWindow(openToolsButton_, FALSE);
+        SetWindowTextW(openToolsButton_, L"Opening...");
+    }
+    if (runTestsButton_) {
+        EnableWindow(runTestsButton_, FALSE);
+    }
+    if (summaryLabel_) {
+        SetWindowTextW(summaryLabel_,
+                       (doneSummary_ + L"\r\n\r\nOpening test tools (no macro)...").c_str());
+    }
+    applyHint(L"Opening test tools (MemTest last, on top). No macro replay.");
+
+    if (stressThread_.joinable()) {
+        stressThread_.join();
+    }
+    stressThread_ = std::thread([this] {
+        const auto post = [this](std::wstring text, bool final) {
+            auto* msg = new StressMessage{std::move(text), final};
+            if (!PostMessageW(hwnd_, WM_APP_STRESS, 0, reinterpret_cast<LPARAM>(msg))) {
+                delete msg;
+            }
+        };
+
+        Stress::Callbacks callbacks;
+        callbacks.log = [&](const std::wstring& m) { post(L"• " + m, false); };
+        callbacks.status = [&](const std::wstring& m) { post(m, false); };
+
+        try {
+            const auto config = Stress::loadConfig(currentExecutable());
+            const Stress::Result result = Stress::launchTools(config, callbacks);
+            post(L"Done. " + result.message, true);
+        } catch (const std::exception& ex) {
+            const std::string what = ex.what();
+            post(L"Open tools failed: " + std::wstring(what.begin(), what.end()), true);
+        } catch (...) {
+            post(L"Open tools failed with an unknown error.", true);
         }
     });
 }
@@ -1201,11 +1272,52 @@ void App::applyHint(const std::wstring& hint) {
 }
 
 void App::toggleRecording() {
-    if (recording_) {
-        finishRecording();
+    if (stressRunning_ || dumping_) {
         return;
     }
-    if (stressRunning_ || dumping_) {
+
+    const auto exe = currentExecutable();
+    const auto config = Stress::loadConfig(exe);
+    const std::wstring engine = config.macroEngine;
+    const bool python =
+        engine.empty() || _wcsicmp(engine.c_str(), L"python") == 0 ||
+        _wcsicmp(engine.c_str(), L"py") == 0 || _wcsicmp(engine.c_str(), L"helper") == 0;
+
+    // Default: launch MacroHelper.exe recording GUI (Python).
+    if (python) {
+        if (recording_) {
+            // Legacy in-process recorder may still be active if the user switched engines.
+            finishRecording();
+        }
+        const auto helper = Stress::macroHelperPath(exe);
+        std::error_code ec;
+        if (!std::filesystem::exists(helper, ec)) {
+            MessageBoxW(hwnd_,
+                        L"MacroHelper.exe was not found next to SingleUpdate.exe.\n"
+                        L"Copy MacroHelper.exe onto the USB stick (same folder), or set\n"
+                        L"MacroEngine=cpp in stress.ini to use the built-in recorder.",
+                        L"Win Auto Updater", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        // Always record to the Desktop so the file is easy to find after F10.
+        // Replay still prefers a copy next to the exe when present (USB deploy).
+        std::filesystem::path macroFile = Stress::desktopDir() / L"macro.json";
+        if (macroFile.parent_path().empty()) {
+            macroFile = Stress::macroFilePath(exe, config);
+        }
+        const std::wstring args =
+            L"--record --macro \"" + macroFile.wstring() + L"\"";
+        ShellExecuteW(hwnd_, L"open", helper.wstring().c_str(), args.c_str(),
+                      helper.parent_path().wstring().c_str(), SW_SHOWNORMAL);
+        applyHint(L"MacroHelper opened — 1) Iniciar gravação  2) Open test tools  "
+                  L"3) click the apps  4) F10. Saves to: " +
+                  macroFile.wstring());
+        return;
+    }
+
+    // Fallback: built-in C++ recorder (macro.txt).
+    if (recording_) {
+        finishRecording();
         return;
     }
 
@@ -1222,8 +1334,8 @@ void App::toggleRecording() {
     if (recordButton_) {
         SetWindowTextW(recordButton_, L"Stop (F10)");
     }
-    applyHint(L"Recording macro: do every click and key you want replayed in powerMAX / "
-              L"MemTest / CrystalDiskMark, then press F10 to stop.");
+    applyHint(L"Recording macro (C++): do every click and key you want replayed, then press "
+              L"F10 to stop.");
 }
 
 void App::finishRecording() {

@@ -845,6 +845,10 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
     }
     if (reopenToggleButton_) {
         if (success) {
+            // Reflect the real state of the logon task (it is not stored in memory
+            // across launches): ON only if the tool will actually reopen.
+            reopenAfterRestart_ = Scheduler(currentExecutable()).exists();
+            updateReopenToggleText();
             ShowWindow(reopenToggleButton_, SW_SHOW);
             EnableWindow(reopenToggleButton_, TRUE);
         } else {
@@ -1701,8 +1705,8 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             std::wstring error;
                             if (!scheduler.create(&error)) {
                                 MessageBoxW(hwnd_,
-                                            L"Could not schedule the tool to reopen after a "
-                                            L"restart:\r\n" + error,
+                                            (L"Could not schedule the tool to reopen after a "
+                                             L"restart:\r\n" + error).c_str(),
                                             L"Win Auto Updater", MB_OK | MB_ICONWARNING);
                             }
                         } else {

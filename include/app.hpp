@@ -146,7 +146,6 @@ private:
     void runStressTests();
     void runUiDump();
     void launchMonitorTools();
-    void launchTestTools();
     void toggleRecording();
     void finishRecording();
     void applyHint(const std::wstring& hint);

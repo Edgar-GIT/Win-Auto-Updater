@@ -359,46 +359,16 @@ Config loadConfig(const std::filesystem::path& executable) {
     if (!std::filesystem::exists(path, ec)) {
         std::wofstream out(path);
         if (out.is_open()) {
-            out << L"; Win Auto Updater stress-test configuration\n";
-            out << L"; Values: 1/0 for booleans. Times are in minutes unless noted.\n";
-            out << L"; Tools are expected in Desktop\\programas de teste.\n\n";
-            out << L"OpenHardwareMonitor=1\n";
-            out << L"BatteryCare=1\n";
-            out << L"FurMark=1\n";
-            out << L"FurMarkMinutes=15\n";
-            out << L"FurMarkMsaa=1\n";
-            out << L"FurMarkFullscreen=1\n";
-            out << L"FurMarkGpuIndex=0\n";
-            out << L"Prime95=1\n";
-            out << L"Prime95Minutes=120\n";
-            out << L"DiskSpd=1\n";
-            out << L"DiskSpdDrive=C:\n";
-            out << L"DiskSpdSeconds=60\n";
-            out << L"DiskSpdSizeMb=256\n";
-            out << L"DiskSpdArgs=\n";
-            out << L"MemTest=1\n";
-            out << L"PowerMax=1\n";
-            out << L"CrystalDiskMark=1\n";
-            out << L"RunGuiAutomation=1\n";
-            out << L"UseMacro=1\n";
+            out << L"; Win Auto Updater stress-test configuration\n\n";
+            out << L"; When UseMacro=1 and a macro.txt was recorded next to the app, the\n";
+            out << L"; stress run opens the same programs as the manual .bat (FurMark,\n";
+            out << L"; Prime95, CrystalDiskMark, powerMAX, MemTest) and replays the macro.\n";
+            out << L"; OpenHardwareMonitor and BatteryCare are started from the Monitor\n";
+            out << L"; button only. Tools are expected in Desktop\\programas de teste.\n\n";
+            out << L"; Run the test bench automatically after a successful update.\n";
             out << L"AutoRunStress=1\n\n";
-            out << L"[UIA]\n";
-            out << L"; UI Automation settings for GUI-only tools.\n";
-            out << L"; Buttons are matched (case-insensitive, substring) against the names\n";
-            out << L"; found in the window. Use the \"Dump UI tree\" button in the app to\n";
-            out << L"; discover the real names, then edit these values.\n";
-            out << L"PowerMax.Exe=powerMAX\\powerMAX.exe\n";
-            out << L"PowerMax.Window=powerMAX\n";
-            out << L"PowerMax.Buttons=Start|Test|Iniciar|Begin|Run|Go\n";
-            out << L"PowerMax.Instances=1\n";
-            out << L"MemTest.Exe=memtest.exe\n";
-            out << L"MemTest.Window=MemTest\n";
-            out << L"MemTest.Buttons=Start Testing|Start|Test\n";
-            out << L"MemTest.Instances=1\n";
-            out << L"CrystalDiskMark.Exe=CrystalDiskMark9\\DiskMark64.exe\n";
-            out << L"CrystalDiskMark.Window=CrystalDiskMark\n";
-            out << L"CrystalDiskMark.Buttons=All|Start|Iniciar\n";
-            out << L"CrystalDiskMark.Instances=1\n";
+            out << L"; Replay macro.txt instead of using the .bat flow.\n";
+            out << L"UseMacro=1\n";
         }
         return config;
     }

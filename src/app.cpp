@@ -478,7 +478,7 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
 
     openToolsButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Open test tools", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Run stress tests", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OPEN_TOOLS)), instance_, nullptr);
 
     stressToggleButton_ = CreateWindowExW(
@@ -1082,6 +1082,10 @@ void App::runStressTests() {
         EnableWindow(runTestsButton_, FALSE);
         SetWindowTextW(runTestsButton_, L"Tests running...");
     }
+    if (openToolsButton_) {
+        EnableWindow(openToolsButton_, FALSE);
+        SetWindowTextW(openToolsButton_, L"Tests running...");
+    }
     if (summaryLabel_) {
         SetWindowTextW(summaryLabel_,
                        (doneSummary_ + L"\r\n\r\nStress tests:\r\nLaunching hardware test "
@@ -1172,25 +1176,6 @@ void App::launchMonitorTools() {
     }
 }
 
-// "Open test tools" — starts the same GUI programs the manual .bat starts, so a
-// macro can be recorded with the tools already on screen.
-void App::launchTestTools() {
-    const std::filesystem::path base = Stress::toolsBaseDir();
-    const auto launch = [this](const std::wstring& label, const std::filesystem::path& tool) {
-        std::wstring error;
-        if (launchToolProcess(tool, &error)) {
-            appendLog(L"Started " + label + L".");
-        } else {
-            appendLog(L"Could not start " + label + L": " + error + L" (" + tool.wstring() + L")");
-        }
-    };
-    launch(L"FurMark", base / L"FurMark2_x64" / L"FurMark_GUI.exe");
-    launch(L"Prime95", base / L"Prime95" / L"prime95.exe");
-    launch(L"CrystalDiskMark", base / L"CrystalDiskMark9" / L"DiskMark64.exe");
-    launch(L"powerMAX", base / L"powerMAX" / L"powerMAX.exe");
-    launch(L"MemTest", base / L"memtest.exe");
-}
-
 void App::updateStressToggleText() {
     if (stressToggleButton_) {
         SetWindowTextW(stressToggleButton_,
@@ -1201,9 +1186,7 @@ void App::updateStressToggleText() {
 
 void App::updateReopenToggleText() {
     if (reopenToggleButton_) {
-        SetWindowTextW(reopenToggleButton_,
-                       reopenAfterRestart_ ? L"Reopen after restart: ON"
-                                           : L"Reopen after restart: OFF");
+        SetWindowTextW(reopenToggleButton_, L"Reopen after restart");
     }
 }
 
@@ -1723,7 +1706,7 @@ void App::drawButton(const DRAWITEMSTRUCT* item) {
         RECT textRect = r;
         textRect.left += 14;
         textRect.right = badgeLeft - 8;
-        SelectObject(hdc, buttonFont_ ? buttonFont_ : smallFont_);
+        SelectObject(hdc, smallFont_ ? smallFont_ : buttonFont_);
         SetTextColor(hdc, disabled ? RGB(152, 152, 152) : kTextPrimary);
         DrawTextW(hdc, label, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
@@ -1914,7 +1897,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     launchMonitorTools();
                     return 0;
                 case IDC_OPEN_TOOLS:
-                    launchTestTools();
+                    runStressTests();
                     return 0;
                 case IDC_CLOSE_REOPEN:
                     if (allowClose_) {
@@ -1980,11 +1963,18 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         summaryLabel_,
                         (doneSummary_ + L"\r\n\r\nStress tests:\r\n" + stressLog_).c_str());
                 }
+                if (!uiDoneMode_ && currentLabel_) {
+                    SetWindowTextW(currentLabel_, msg->text.c_str());
+                }
                 if (msg->final) {
                     stressRunning_ = false;
                     if (runTestsButton_) {
                         EnableWindow(runTestsButton_, TRUE);
                         SetWindowTextW(runTestsButton_, L"Run stress tests");
+                    }
+                    if (openToolsButton_) {
+                        EnableWindow(openToolsButton_, TRUE);
+                        SetWindowTextW(openToolsButton_, L"Run stress tests");
                     }
                 }
                 delete msg;

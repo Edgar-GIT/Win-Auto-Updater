@@ -292,22 +292,53 @@ void Recorder::handleKey(WPARAM message, const KBDLLHOOKSTRUCT& info) {
     if ((info.flags & LLKHF_INJECTED) != 0) {
         return;
     }
-    if (message != WM_KEYDOWN && message != WM_SYSKEYDOWN) {
+    // We need both keydown and keyup to track modifier state correctly.
+    if (message != WM_KEYDOWN && message != WM_SYSKEYDOWN &&
+        message != WM_KEYUP && message != WM_SYSKEYUP) {
         return;
     }
+    const bool isDown = (message == WM_KEYDOWN || message == WM_SYSKEYDOWN);
+
+    // Update modifier state on every key event.
     switch (info.vkCode) {
         case VK_SHIFT:
+        case VK_LSHIFT:
+        case VK_RSHIFT:
+            shiftDown_ = isDown;
+            return;
         case VK_CONTROL:
+        case VK_LCONTROL:
+        case VK_RCONTROL:
+            ctrlDown_ = isDown;
+            return;
         case VK_MENU:
+        case VK_LMENU:
+        case VK_RMENU:
+            altDown_ = isDown;
+            return;
         case VK_LWIN:
         case VK_RWIN:
+            winDown_ = isDown;
             return;
         default:
             break;
     }
+    // Only record non-modifier keys on keydown (not keyup).
+    if (!isDown) {
+        return;
+    }
+    // F10 is handled in keyProc before calling this function; skip here as safety.
+    if (info.vkCode == VK_F10) {
+        return;
+    }
     Event event;
     event.kind = Event::Kind::Key;
     event.vk = info.vkCode;
+    // Store modifier state at time of keypress.
+    event.ctrl = ctrlDown_;
+    event.shift = shiftDown_;
+    event.alt = altDown_;
+    event.win = winDown_;
     HWND window = GetForegroundWindow();
     if (window != nullptr) {
         HWND root = GetAncestor(window, GA_ROOT);

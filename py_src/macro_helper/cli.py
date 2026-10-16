@@ -8,7 +8,20 @@ from pathlib import Path
 
 
 def _default_macro_path() -> Path:
-    # Next to the frozen exe when packaged; otherwise cwd.
+    # Prefer Desktop\\macro.json (visible after recording). Fall back to beside the
+    # frozen exe / cwd when Desktop cannot be resolved.
+    desktop = Path.home() / "Desktop"
+    if sys.platform == "win32":
+        try:
+            import os
+
+            userprofile = os.environ.get("USERPROFILE")
+            if userprofile:
+                desktop = Path(userprofile) / "Desktop"
+        except Exception:
+            pass
+    if desktop.is_dir():
+        return desktop / "macro.json"
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "macro.json"
     return Path.cwd() / "macro.json"

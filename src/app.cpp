@@ -1039,6 +1039,9 @@ void App::beginUpdate(bool withoutDrivers) {
     if (openToolsButton_) {
         ShowWindow(openToolsButton_, SW_HIDE);
     }
+    if (runTestsButton_) {
+        ShowWindow(runTestsButton_, SW_HIDE);
+    }
     if (terminal_) {
         ShowWindow(terminal_, SW_SHOW);
     }
@@ -1995,9 +1998,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                     return 0;
                 case IDC_RUN_TESTS:
-                    if (uiDoneMode_) {
-                        runStressTests();
-                    }
+                    runStressTests();
                     return 0;
                 case IDC_DUMP_UI:
                     runUiDump();
@@ -2009,7 +2010,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     launchMonitorTools();
                     return 0;
                 case IDC_OPEN_TOOLS:
-                    runStressTests();
+                    openTestTools();
                     return 0;
                 case IDC_CLOSE_REOPEN:
                     if (allowClose_) {
@@ -2086,7 +2087,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                     if (openToolsButton_) {
                         EnableWindow(openToolsButton_, TRUE);
-                        SetWindowTextW(openToolsButton_, L"Run stress tests");
+                        SetWindowTextW(openToolsButton_, L"Open test tools");
                     }
                 }
                 delete msg;

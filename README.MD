@@ -118,8 +118,14 @@ build/SingleUpdate.exe
 ## Stress macros (MacroHelper)
 
 GUI recording / replay for the hardware bench lives in `py_src/` (Python).  
-Build `MacroHelper.exe` on Windows (`py_src/build_exe.bat`) and deploy it next to
-`SingleUpdate.exe` with `macro.json`. Details: [`py_src/README.md`](py_src/README.md).
+`build/MacroHelper.exe` can be cross-built from Linux with Wine + Windows Python
+(`py_src/build_exe_wine.sh`) or natively on Windows (`py_src/build_exe.bat`).
+
+Deploy on the USB stick: `SingleUpdate.exe` + `MacroHelper.exe` (+ `macro.json`
+after recording). The folder `Desktop\programas de teste\` must exist on the PC.
+
+Buttons: **Open test tools** (launch only, MemTest on top) · **Run stress tests**
+(launch + replay macro) · **Record macro**. Details: [`py_src/README.md`](py_src/README.md).
 
 `stress.ini`: `MacroEngine=python` (default), `MacroFile=macro.json`, `UseMacro=1`.  
 Set `MacroEngine=cpp` for the legacy in-process recorder (`macro.txt`).

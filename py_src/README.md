@@ -101,16 +101,27 @@ o próprio helper, `SingleUpdate.exe`, etc.
 
 ## Como gravar (passo a passo)
 
-1. Copia `SingleUpdate.exe` + `MacroHelper.exe` para a pen (mesma pasta).
-2. No PC de preparação, corre o SingleUpdate **como admin**.
-3. (Opcional) Abre as tools com **Run stress tests** ou manualmente a partir de
-   `Desktop\programas de teste\`.
-4. Clica **Record macro** → abre o MacroHelper.
-5. **Iniciar gravação** (estado vermelho). Clica OK/Start/fullscreen, faz `Ctrl+Esc`, etc.
-6. **F10** ou **Parar** — a macro é guardada em `macro.json` ao lado do exe (e abre no editor).
-7. Podes desfazer/apagar passos na lista antes de guardar de novo.
+1. Na pen: `SingleUpdate.exe` + `MacroHelper.exe`. A pasta
+   `Desktop\programas de teste\` tem de existir no PC Windows (não precisa de ir na pen
+   se já estiver no Desktop).
+2. Corre o SingleUpdate **como admin**.
+3. **Record macro** → MacroHelper abre → **Iniciar gravação** (vermelho).
+4. **Open test tools** — abre as 5 apps (MemTest por último, à frente).
+5. Clica manualmente OK/Start/fullscreen / `Ctrl+Esc` nas apps enquanto grava.
+6. **F10** — grava `Desktop\macro.json` (e abre o ficheiro).
+7. Testa: **Run stress tests** (abre as tools + reproduz a macro).
+8. Para a pen: copia `Desktop\macro.json` para a mesma pasta dos dois `.exe`.
 
 A GUI fica *topmost*, não grava cliques sobre si própria, e o F10 é consumido.
+
+### Botões
+
+| Botão | O que faz |
+|-------|-----------|
+| **Open test tools** | Só abre as 5 apps (sem macro). MemTest fica por cima. |
+| **Run stress tests** | Resolução máx. → abre as 5 apps → replay da macro. |
+| **Record macro** | Abre o MacroHelper (gravação). |
+| **Monitor** | OpenHardwareMonitor (+ BatteryCare em portáteis). |
 
 ## Replay (pelo SingleUpdate)
 

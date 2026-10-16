@@ -1,0 +1,6 @@
+# MacroHelper — Python 3.11/3.12 x64 on Windows only
+pyautogui>=0.9.54
+pywin32>=306
+pywinauto>=0.6.8
+pynput>=1.7.6
+comtypes>=1.2.0

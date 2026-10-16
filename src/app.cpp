@@ -448,7 +448,7 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RECORD_MACRO)), instance_, nullptr);
 
     monitorButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Monitor", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
 
     stressToggleButton_ = CreateWindowExW(
@@ -560,6 +560,9 @@ void App::layoutControls() {
         }
         if (updateNoDriversButton_) {
             MoveWindow(updateNoDriversButton_, centerX, 262 + chooseH + 14, chooseW, chooseH, TRUE);
+        }
+        if (monitorButton_) {
+            MoveWindow(monitorButton_, centerX, 262 + (chooseH + 14) * 2, chooseW, 34, TRUE);
         }
         if (uninstallButton_) {
             MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
@@ -970,6 +973,9 @@ void App::beginUpdate(bool withoutDrivers) {
     if (stressToggleButton_) {
         ShowWindow(stressToggleButton_, SW_HIDE);
     }
+    if (monitorButton_) {
+        ShowWindow(monitorButton_, SW_HIDE);
+    }
     if (terminal_) {
         ShowWindow(terminal_, SW_SHOW);
     }
@@ -1056,6 +1062,13 @@ void App::runStressTests() {
         callbacks.status = [&](const std::wstring& m) { post(m, false); };
 
         try {
+            // Set the maximum display resolution first so fullscreen tools
+            // (FurMark, etc.) and the recorded macro coordinates line up.
+            post(L"• Setting the maximum display resolution...", false);
+            std::wstring displayDetail;
+            Display::setMaxResolution(&displayDetail);
+            post(L"• Display: " + displayDetail, false);
+
             const auto config = Stress::loadConfig(currentExecutable());
             const Stress::Result result = Stress::run(config, callbacks);
             post(L"Done. " + result.message, true);
@@ -1751,29 +1764,27 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     toggleRecording();
                     return 0;
                 case IDC_MONITOR: {
-                    if (uiDoneMode_) {
-                        const std::filesystem::path base = Stress::toolsBaseDir();
-                        const std::filesystem::path ohm =
-                            base / L"OpenHardwareMonitor" / L"OpenHardwareMonitor.exe";
-                        std::error_code ec;
-                        if (std::filesystem::exists(ohm, ec)) {
-                            STARTUPINFOW si{};
-                            si.cb = sizeof(si);
-                            PROCESS_INFORMATION pi{};
-                            std::wstring cmd = L"\"" + ohm.wstring() + L"\"";
-                            std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-                            buf.push_back(L'\0');
-                            if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0,
-                                               nullptr, ohm.parent_path().c_str(), &si, &pi)) {
-                                CloseHandle(pi.hThread);
-                                CloseHandle(pi.hProcess);
-                                appendLog(L"OpenHardwareMonitor started.");
-                            } else {
-                                appendLog(L"Failed to start OpenHardwareMonitor.");
-                            }
+                    const std::filesystem::path base = Stress::toolsBaseDir();
+                    const std::filesystem::path ohm =
+                        base / L"OpenHardwareMonitor" / L"OpenHardwareMonitor.exe";
+                    std::error_code ec;
+                    if (std::filesystem::exists(ohm, ec)) {
+                        STARTUPINFOW si{};
+                        si.cb = sizeof(si);
+                        PROCESS_INFORMATION pi{};
+                        std::wstring cmd = L"\"" + ohm.wstring() + L"\"";
+                        std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+                        buf.push_back(L'\0');
+                        if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0,
+                                           nullptr, ohm.parent_path().c_str(), &si, &pi)) {
+                            CloseHandle(pi.hThread);
+                            CloseHandle(pi.hProcess);
+                            appendLog(L"OpenHardwareMonitor started.");
                         } else {
-                            appendLog(L"OpenHardwareMonitor not found: " + ohm.wstring());
+                            appendLog(L"Failed to start OpenHardwareMonitor.");
                         }
+                    } else {
+                        appendLog(L"OpenHardwareMonitor not found: " + ohm.wstring());
                     }
                     return 0;
                 }

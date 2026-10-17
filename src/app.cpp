@@ -25,6 +25,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -55,7 +56,7 @@ std::filesystem::path currentExecutable() {
     return std::filesystem::path(buffer);
 }
 
-// Launches one of the test tools in its own directory, invisible to the caller.
+// Opens a GUI tool like Explorer (ShellExecute "open") — same as a double-click.
 bool launchToolProcess(const std::filesystem::path& tool, std::wstring* error) {
     std::error_code ec;
     if (!std::filesystem::exists(tool, ec)) {
@@ -64,21 +65,24 @@ bool launchToolProcess(const std::filesystem::path& tool, std::wstring* error) {
         }
         return false;
     }
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring command = L"\"" + tool.wstring() + L"\"";
-    std::vector<wchar_t> buffer(command.begin(), command.end());
-    buffer.push_back(L'\0');
-    if (CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                       tool.parent_path().c_str(), &si, &pi) == 0) {
+    const std::wstring file = tool.wstring();
+    const std::wstring dir = tool.parent_path().wstring();
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"open";
+    info.lpFile = file.c_str();
+    info.lpDirectory = dir.empty() ? nullptr : dir.c_str();
+    info.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&info) == FALSE) {
         if (error) {
-            *error = L"CreateProcess failed (" + std::to_wstring(GetLastError()) + L")";
+            *error = L"ShellExecute failed (" + std::to_wstring(GetLastError()) + L")";
         }
         return false;
     }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    if (info.hProcess != nullptr) {
+        CloseHandle(info.hProcess);
+    }
     return true;
 }
 
@@ -97,6 +101,66 @@ bool isElevated() {
     CloseHandle(token);
     return elevated == TRUE;
 }
+
+std::wstring systemErrorMessage(DWORD code) {
+    wchar_t* buffer = nullptr;
+    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                        FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD n = FormatMessageW(flags, nullptr, code, 0, reinterpret_cast<LPWSTR>(&buffer), 0,
+                                   nullptr);
+    std::wstring message = L"error " + std::to_wstring(code);
+    if (n != 0 && buffer != nullptr) {
+        message += L": ";
+        message += buffer;
+        while (!message.empty() && (message.back() == L'\r' || message.back() == L'\n' ||
+                                    message.back() == L' ')) {
+            message.pop_back();
+        }
+        LocalFree(buffer);
+    }
+    return message;
+}
+
+bool launchDetached(const std::filesystem::path& exe, const std::wstring& args,
+                    std::wstring* error) {
+    std::wstring command = L"\"" + exe.wstring() + L"\"";
+    if (!args.empty()) {
+        command += L" ";
+        command += args;
+    }
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    const std::wstring dir = exe.parent_path().wstring();
+    if (CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                       dir.empty() ? nullptr : dir.c_str(), &si, &pi) == 0) {
+        if (error) {
+            *error = systemErrorMessage(GetLastError());
+        }
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+const wchar_t* kChooserHelp =
+    L"WINDOWS UPDATE\r\n"
+    L"  • Install all updates — Windows + drivers\r\n"
+    L"  • Update without drivers — Windows only\r\n"
+    L"  • Toggle below — auto-run stress tests after update\r\n"
+    L"\r\n"
+    L"STRESS / MACRO\r\n"
+    L"  Tools: SEMPRE Desktop\\programas de teste  (nao a pasta na pen)\r\n"
+    L"  1. Record macro — abre o gravador (Iniciar gravacao)\r\n"
+    L"  2. Open tools only — abre as 5 apps (MemTest por cima)\r\n"
+    L"  3. Clica manualmente nas apps enquanto grava\r\n"
+    L"  4. F10 — guarda Desktop\\macro.json\r\n"
+    L"  5. Run tests + macro — testa o replay automaticamente\r\n"
+    L"  • Monitor sensors — OpenHardwareMonitor (+ BatteryCare)";
 
 std::wstring* heapCopy(std::wstring_view text) {
     return new std::wstring(text);
@@ -458,7 +522,7 @@ bool App::createUi() {
         nullptr);
 
     runTestsButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Run stress tests", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Run tests + macro", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RUN_TESTS)), instance_, nullptr);
 
     closeReopenButton_ = CreateWindowExW(
@@ -466,7 +530,7 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLOSE_REOPEN)), instance_, nullptr);
 
     dumpButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Dump UI tree", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Dump UI tree", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DUMP_UI)), instance_, nullptr);
 
     recordButton_ = CreateWindowExW(
@@ -474,11 +538,11 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RECORD_MACRO)), instance_, nullptr);
 
     monitorButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Monitor sensors", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
 
     openToolsButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Open test tools", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Open tools only", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OPEN_TOOLS)), instance_, nullptr);
 
     stressToggleButton_ = CreateWindowExW(
@@ -544,12 +608,15 @@ bool App::createUi() {
     SetTimer(hwnd_, kAnimTimerId, kAnimIntervalMs, nullptr);
 
     setStatus(L"Ready");
-    setPhase(L"Choose how to update");
-    setCurrent(L"Install everything, or update Windows without touching hardware drivers.");
+    setPhase(L"Home — updates & stress tests");
+    setCurrent(L"Pick an update mode, or use the stress/macro buttons below. See the guide.");
+    if (summaryLabel_) {
+        SetWindowTextW(summaryLabel_, kChooserHelp);
+        ShowWindow(summaryLabel_, SW_SHOW);
+    }
     appendLog(L"Win Auto Updater started.");
-    appendLog(L"Choose an update mode to begin.");
-    appendLog(L"This tool searches, downloads, and installs Windows updates automatically.");
-    appendLog(L"Do not shut down the PC until the process finishes or asks for a restart.");
+    appendLog(L"Tools folder: Desktop\\programas de teste (always)");
+    appendLog(L"Macro: Record macro → Open tools only → click apps → F10 → Run tests + macro.");
     return true;
 }
 
@@ -574,51 +641,78 @@ void App::layoutControls() {
     spinnerRect_ = {width - 66, 34, width - 30, 70};
 
     if (choosing_) {
-        const int chooseW = 360;
+        const int chooseW = 420;
         const int centerX = (width - chooseW) / 2;
+        const int leftCol = margin;
+        const int helpW = contentW;
+        int y = 118;
+
         if (phaseLabel_) {
-            MoveWindow(phaseLabel_, margin, 140, contentW, 30, TRUE);
+            MoveWindow(phaseLabel_, leftCol, y, contentW, 28, TRUE);
         }
+        y += 30;
         if (currentLabel_) {
-            MoveWindow(currentLabel_, margin, 176, contentW, 24, TRUE);
+            MoveWindow(currentLabel_, leftCol, y, contentW, 22, TRUE);
         }
-        // The two update actions are the main call to action on this screen.
+        y += 30;
+
+        // Update actions
         if (updateButton_) {
-            MoveWindow(updateButton_, centerX, 212, chooseW, 52, TRUE);
+            MoveWindow(updateButton_, centerX, y, chooseW, 48, TRUE);
         }
+        y += 48 + 10;
         if (updateNoDriversButton_) {
-            MoveWindow(updateNoDriversButton_, centerX, 212 + 52 + 12, chooseW, 44, TRUE);
+            MoveWindow(updateNoDriversButton_, centerX, y, chooseW, 40, TRUE);
         }
+        y += 40 + 10;
         if (stressToggleButton_) {
-            MoveWindow(stressToggleButton_, centerX, 212 + 52 + 12 + 44 + 18, chooseW, 40, TRUE);
+            MoveWindow(stressToggleButton_, centerX, y, chooseW, 36, TRUE);
         }
-        // Open tools (no macro) | Run stress tests (tools + macro) | Monitor
-        const int toolRowY = 212 + 52 + 12 + 44 + 18 + 40 + 18;
-        const int toolThirdW = (chooseW - gap * 2) / 3;
+        y += 36 + 14;
+
+        // Stress / macro — two clear rows
+        const int halfW = (chooseW - gap) / 2;
+        if (recordButton_) {
+            ShowWindow(recordButton_, SW_SHOW);
+            MoveWindow(recordButton_, centerX, y, halfW, 40, TRUE);
+        }
         if (openToolsButton_) {
             ShowWindow(openToolsButton_, SW_SHOW);
-            MoveWindow(openToolsButton_, centerX, toolRowY, toolThirdW, 36, TRUE);
+            MoveWindow(openToolsButton_, centerX + halfW + gap, y, halfW, 40, TRUE);
         }
+        y += 40 + 8;
         if (runTestsButton_) {
             ShowWindow(runTestsButton_, SW_SHOW);
             EnableWindow(runTestsButton_, TRUE);
-            MoveWindow(runTestsButton_, centerX + toolThirdW + gap, toolRowY, toolThirdW, 36, TRUE);
+            MoveWindow(runTestsButton_, centerX, y, halfW, 40, TRUE);
         }
         if (monitorButton_) {
-            MoveWindow(monitorButton_, centerX + (toolThirdW + gap) * 2, toolRowY, toolThirdW, 36,
-                       TRUE);
+            ShowWindow(monitorButton_, SW_SHOW);
+            MoveWindow(monitorButton_, centerX + halfW + gap, y, halfW, 40, TRUE);
         }
-        if (uninstallButton_) {
-            MoveWindow(uninstallButton_, auxStartX, buttonY, auxW, kButtonHeight, TRUE);
+        y += 40 + 12;
+
+        if (summaryLabel_) {
+            ShowWindow(summaryLabel_, SW_SHOW);
+            summaryCardRect_ = {margin, y, margin + helpW, buttonY - 12};
+            MoveWindow(summaryLabel_, summaryCardRect_.left + 18, summaryCardRect_.top + 14,
+                       summaryCardRect_.right - summaryCardRect_.left - 36,
+                       summaryCardRect_.bottom - summaryCardRect_.top - 28, TRUE);
         }
         if (dumpButton_) {
-            MoveWindow(dumpButton_, auxStartX + auxW + gap, buttonY, auxW, kButtonHeight, TRUE);
+            ShowWindow(dumpButton_, SW_HIDE);
         }
-        if (recordButton_) {
-            MoveWindow(recordButton_, auxStartX + (auxW + gap) * 2, buttonY, auxW, kButtonHeight, TRUE);
+
+        const int bottomW = 200;
+        const int bottomGap = 12;
+        const int bottomTotal = bottomW * 2 + bottomGap;
+        const int bottomX = (width - bottomTotal) / 2;
+        if (uninstallButton_) {
+            MoveWindow(uninstallButton_, bottomX, buttonY, bottomW, kButtonHeight, TRUE);
         }
         if (closeButton_) {
-            MoveWindow(closeButton_, auxStartX + (auxW + gap) * 3, buttonY, auxW, kButtonHeight, TRUE);
+            MoveWindow(closeButton_, bottomX + bottomW + bottomGap, buttonY, bottomW, kButtonHeight,
+                       TRUE);
         }
         return;
     }
@@ -901,7 +995,7 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         if (success) {
             ShowWindow(runTestsButton_, SW_SHOW);
             EnableWindow(runTestsButton_, TRUE);
-            SetWindowTextW(runTestsButton_, L"Run stress tests");
+            SetWindowTextW(runTestsButton_, L"Run tests + macro");
         } else {
             ShowWindow(runTestsButton_, SW_HIDE);
         }
@@ -910,10 +1004,13 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         if (success) {
             ShowWindow(openToolsButton_, SW_SHOW);
             EnableWindow(openToolsButton_, TRUE);
-            SetWindowTextW(openToolsButton_, L"Open test tools");
+            SetWindowTextW(openToolsButton_, L"Open tools only");
         } else {
             ShowWindow(openToolsButton_, SW_HIDE);
         }
+    }
+    if (dumpButton_ && success) {
+        ShowWindow(dumpButton_, SW_SHOW);
     }
     if (monitorButton_) {
         if (success) {
@@ -953,54 +1050,33 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
 
 void App::performUninstall() {
     const int confirm =
-        MessageBoxW(hwnd_, L"Uninstall Win Auto Updater and remove its scheduled task?",
+        MessageBoxW(hwnd_,
+                    L"Remove the scheduled reopen task and uninstall this tool?\r\n\r\n"
+                    L"SingleUpdate.exe on the USB is kept until the next restart.",
                     L"Win Auto Updater", MB_OKCANCEL | MB_ICONQUESTION);
     if (confirm != IDOK) {
         return;
     }
 
-    const auto exe = currentExecutable();
-
-    Scheduler scheduler(exe);
-    scheduler.remove();
-
-    StateManager stateManager;
-    stateManager.remove();
-    Cleanup::removeTempFiles();
-
     if (uninstallButton_) {
         EnableWindow(uninstallButton_, FALSE);
-        SetWindowTextW(uninstallButton_, L"Uninstalled");
+        SetWindowTextW(uninstallButton_, L"Uninstalling...");
     }
-    if (runTestsButton_) {
-        ShowWindow(runTestsButton_, SW_HIDE);
-    }
-    if (closeReopenButton_) {
-        ShowWindow(closeReopenButton_, SW_HIDE);
-    }
-    if (reopenToggleButton_) {
-        ShowWindow(reopenToggleButton_, SW_HIDE);
-    }
+    applyHint(L"Uninstalling — removing scheduled task (this should be quick)...");
 
-    if (!exe.empty()) {
-        MoveFileExW(exe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
-    }
-
-    if (summaryLabel_) {
-        SetWindowTextW(summaryLabel_,
-                       L"Win Auto Updater has been uninstalled.\r\n\r\n"
-                       L"The executable will be removed on the next restart.\r\n\r\n"
-                       L"Click Close to exit.");
-    }
-
-    allowClose_ = true;
-    running_ = false;
-
-    // Leave the window open with Close enabled so the user sees the confirmation.
-    if (closeButton_) {
-        EnableWindow(closeButton_, TRUE);
-        ShowWindow(closeButton_, SW_SHOW);
-    }
+    // Task Scheduler COM can block for seconds on the UI thread — do it off-thread.
+    const auto exe = currentExecutable();
+    std::thread([this, exe] {
+        Scheduler scheduler(exe);
+        scheduler.remove();
+        StateManager stateManager;
+        stateManager.remove();
+        Cleanup::removeTempFiles();
+        if (!exe.empty()) {
+            MoveFileExW(exe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
+        PostMessageW(hwnd_, WM_APP_UNINSTALL_DONE, 0, 0);
+    }).detach();
 }
 
 void App::startWorker() {
@@ -1041,6 +1117,12 @@ void App::beginUpdate(bool withoutDrivers) {
     }
     if (runTestsButton_) {
         ShowWindow(runTestsButton_, SW_HIDE);
+    }
+    if (recordButton_) {
+        ShowWindow(recordButton_, SW_HIDE);
+    }
+    if (summaryLabel_) {
+        ShowWindow(summaryLabel_, SW_HIDE);
     }
     if (terminal_) {
         ShowWindow(terminal_, SW_SHOW);
@@ -1192,6 +1274,20 @@ void App::openTestTools() {
             const auto config = Stress::loadConfig(currentExecutable());
             const Stress::Result result = Stress::launchTools(config, callbacks);
             post(L"Done. " + result.message, true);
+            if (!result.ok) {
+                const std::wstring alert =
+                    L"Nao foi possivel abrir as ferramentas de teste.\r\n\r\n"
+                    L"Pasta usada (Ambiente de Trabalho):\r\n" +
+                    result.baseDir +
+                    L"\r\n\r\n" + result.message +
+                    L"\r\n\r\nConfirma que Desktop\\programas de teste existe e tem:\r\n"
+                    L"  FurMark2_x64\\FurMark_GUI.exe\r\n"
+                    L"  Prime95\\prime95.exe\r\n"
+                    L"  CrystalDiskMark9\\DiskMark64.exe\r\n"
+                    L"  powerMAX\\powerMAX.exe  (ou powerMAX_x64.exe)\r\n"
+                    L"  memtest.exe";
+                MessageBoxW(hwnd_, alert.c_str(), L"Open tools only", MB_OK | MB_ICONWARNING);
+            }
         } catch (const std::exception& ex) {
             const std::string what = ex.what();
             post(L"Open tools failed: " + std::wstring(what.begin(), what.end()), true);
@@ -1289,32 +1385,35 @@ void App::toggleRecording() {
     // Default: launch MacroHelper.exe recording GUI (Python).
     if (python) {
         if (recording_) {
-            // Legacy in-process recorder may still be active if the user switched engines.
             finishRecording();
         }
         const auto helper = Stress::macroHelperPath(exe);
         std::error_code ec;
         if (!std::filesystem::exists(helper, ec)) {
             MessageBoxW(hwnd_,
-                        L"MacroHelper.exe was not found next to SingleUpdate.exe.\n"
-                        L"Copy MacroHelper.exe onto the USB stick (same folder), or set\n"
-                        L"MacroEngine=cpp in stress.ini to use the built-in recorder.",
+                        L"MacroHelper.exe was not found next to SingleUpdate.exe.\r\n"
+                        L"Copy MacroHelper.exe onto the USB stick (same folder).",
                         L"Win Auto Updater", MB_OK | MB_ICONWARNING);
             return;
         }
-        // Always record to the Desktop so the file is easy to find after F10.
-        // Replay still prefers a copy next to the exe when present (USB deploy).
         std::filesystem::path macroFile = Stress::desktopDir() / L"macro.json";
         if (macroFile.parent_path().empty()) {
             macroFile = Stress::macroFilePath(exe, config);
         }
-        const std::wstring args =
-            L"--record --macro \"" + macroFile.wstring() + L"\"";
-        ShellExecuteW(hwnd_, L"open", helper.wstring().c_str(), args.c_str(),
-                      helper.parent_path().wstring().c_str(), SW_SHOWNORMAL);
-        applyHint(L"MacroHelper opened — 1) Iniciar gravação  2) Open test tools  "
-                  L"3) click the apps  4) F10. Saves to: " +
+        const std::wstring args = L"--record --macro \"" + macroFile.wstring() + L"\"";
+        std::wstring launchError;
+        if (!launchDetached(helper, args, &launchError)) {
+            MessageBoxW(hwnd_,
+                        (L"Could not start MacroHelper.exe.\r\n\r\n" + launchError +
+                         L"\r\n\r\nPath: " + helper.wstring())
+                            .c_str(),
+                        L"Win Auto Updater", MB_OK | MB_ICONERROR);
+            return;
+        }
+        applyHint(L"MacroHelper: Iniciar gravação → Open tools only → click apps → F10. "
+                  L"Saves: " +
                   macroFile.wstring());
+        appendLog(L"Launched MacroHelper for recording → " + macroFile.wstring());
         return;
     }
 
@@ -1755,11 +1854,11 @@ void App::paint() {
         DrawIconEx(mem, 24, 28, appIcon_, 44, 44, 0, nullptr, DI_NORMAL);
     }
 
-    if (uiDoneMode_) {
+    if (uiDoneMode_ || choosing_) {
         if (summaryCardRect_.right > summaryCardRect_.left) {
             paintRoundRect(mem, summaryCardRect_, 14, cardBrush_);
         }
-    } else if (!choosing_) {
+    } else {
         paintStats(mem);
         if (terminalCardRect_.right > terminalCardRect_.left) {
             paintRoundRect(mem, terminalCardRect_, 14, terminalBrush_);
@@ -2083,15 +2182,58 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     stressRunning_ = false;
                     if (runTestsButton_) {
                         EnableWindow(runTestsButton_, TRUE);
-                        SetWindowTextW(runTestsButton_, L"Run stress tests");
+                        SetWindowTextW(runTestsButton_, L"Run tests + macro");
                     }
                     if (openToolsButton_) {
                         EnableWindow(openToolsButton_, TRUE);
-                        SetWindowTextW(openToolsButton_, L"Open test tools");
+                        SetWindowTextW(openToolsButton_, L"Open tools only");
                     }
                 }
                 delete msg;
             }
+            return 0;
+        }
+        case WM_APP_UNINSTALL_DONE: {
+            if (uninstallButton_) {
+                EnableWindow(uninstallButton_, FALSE);
+                SetWindowTextW(uninstallButton_, L"Uninstalled");
+            }
+            if (runTestsButton_) {
+                ShowWindow(runTestsButton_, SW_HIDE);
+            }
+            if (openToolsButton_) {
+                ShowWindow(openToolsButton_, SW_HIDE);
+            }
+            if (recordButton_) {
+                ShowWindow(recordButton_, SW_HIDE);
+            }
+            if (monitorButton_) {
+                ShowWindow(monitorButton_, SW_HIDE);
+            }
+            if (closeReopenButton_) {
+                ShowWindow(closeReopenButton_, SW_HIDE);
+            }
+            if (reopenToggleButton_) {
+                ShowWindow(reopenToggleButton_, SW_HIDE);
+            }
+            if (dumpButton_) {
+                ShowWindow(dumpButton_, SW_HIDE);
+            }
+            if (summaryLabel_) {
+                SetWindowTextW(summaryLabel_,
+                               L"Win Auto Updater has been uninstalled.\r\n\r\n"
+                               L"The scheduled reopen task was removed.\r\n"
+                               L"SingleUpdate.exe on the USB will disappear on the next restart.\r\n\r\n"
+                               L"Click Close to exit.");
+                ShowWindow(summaryLabel_, SW_SHOW);
+            }
+            allowClose_ = true;
+            if (closeButton_) {
+                EnableWindow(closeButton_, TRUE);
+                ShowWindow(closeButton_, SW_SHOW);
+            }
+            applyHint(L"Uninstall complete. Click Close.");
+            InvalidateRect(hwnd_, nullptr, TRUE);
             return 0;
         }
         case WM_APP_DUMP: {
@@ -2102,8 +2244,8 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (wParam == 0) {
                 MessageBoxW(hwnd_,
-                            L"Could not run the UI dump. Make sure the tool folder is on the "
-                            L"Desktop and try again.",
+                            L"Could not run the UI dump. Make sure \"programas de teste\" is "
+                            L"next to this exe (USB) or on the Desktop.",
                             L"Win Auto Updater", MB_OK | MB_ICONWARNING);
             }
             return 0;

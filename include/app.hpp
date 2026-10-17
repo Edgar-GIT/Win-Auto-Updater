@@ -35,11 +35,12 @@ private:
         WM_APP_CURRENT = WM_APP + 8,
         WM_APP_STATS = WM_APP + 9,
         WM_APP_STRESS = WM_APP + 10,
-        WM_APP_DUMP = WM_APP + 11
+        WM_APP_DUMP = WM_APP + 11,
+        WM_APP_UNINSTALL_DONE = WM_APP + 13
     };
 
-    static constexpr int kWidth = 780;
-    static constexpr int kHeight = 660;
+    static constexpr int kWidth = 860;
+    static constexpr int kHeight = 720;
     static constexpr int kButtonHeight = 40;
     static constexpr int kButtonWidth = 170;
     static constexpr int kHeaderHeight = 100;

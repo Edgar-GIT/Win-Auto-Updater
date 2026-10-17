@@ -1,23 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Build on Windows (x64):
+# Build on Windows (x64) — requires a FULL Python with tcl/tk (not embeddable):
 #   pyinstaller MacroHelper.spec
 # Output: dist/MacroHelper.exe  → copy next to SingleUpdate.exe
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 
+# Bundle tkinter + Tcl/Tk runtime (missing from embeddable Python builds).
+_tk_datas, _tk_binaries, _tk_hidden = collect_all('tkinter')
+
 a = Analysis(
-    ['macro_helper/__main__.py'],
+    ['run_macro_helper.py'],
     pathex=['.'],
-    binaries=[],
-    datas=[],
+    binaries=_tk_binaries,
+    datas=_tk_datas,
     hiddenimports=[
+        'tkinter',
+        'tkinter.filedialog',
+        'tkinter.messagebox',
         'comtypes.stream',
         'comtypes.gen',
         'pywinauto.uia_element_info',
         'pywinauto.controls.uiawrapper',
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
-    ],
+    ] + _tk_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

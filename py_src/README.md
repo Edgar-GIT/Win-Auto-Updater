@@ -134,6 +134,8 @@ A GUI fica *topmost*, não grava cliques sobre si própria, e o F10 é consumido
 
 ## Build do `MacroHelper.exe` (Windows)
 
+Precisas de um Python **completo** com Tcl/Tk (não o embeddable — falta `tkinter`).
+
 ```bat
 cd py_src
 build_exe.bat
@@ -147,7 +149,14 @@ pip install -r requirements.txt pyinstaller
 pyinstaller --noconfirm MacroHelper.spec
 ```
 
-O spec usa `--onefile` com **noconsole** (sem flash de consola na gravação). O modo `--play`
+Cross-build no Linux (Wine + Python full com tcl/tk):
+
+```bash
+./py_src/build_exe_wine.sh
+REM → build/MacroHelper.exe
+```
+
+O spec usa `--onefile` com **noconsole** e empacota `tkinter` + Tcl/Tk. O modo `--play`
 reatacha stdout aos handles herdados do SingleUpdate e escreve sempre `macro.json.log`.
 
 ## Deploy (pen)

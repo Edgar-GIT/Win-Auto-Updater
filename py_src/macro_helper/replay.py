@@ -15,7 +15,12 @@ LogFn = Callable[[str], None]
 
 # Never fail the whole OS with a fail-safe corner click during automation.
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.05
+pyautogui.PAUSE = 0.02
+
+# Extra settle time added on top of every recorded inter-step delay (lag / slower PCs).
+DEFAULT_PAD_MS = 4000
+# After the timed wait, how long to keep hunting the target window.
+DEFAULT_WINDOW_TIMEOUT_S = 15.0
 
 
 class ReplayReport:
@@ -156,8 +161,9 @@ def play_step(
     *,
     index: int,
     total: int,
-    window_timeout_s: float = 60.0,
+    window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
     on_fail: str = "abort",  # abort | continue
+    prefer_coords: bool = True,
     log: LogFn | None = None,
 ) -> bool:
     label = f"[{index}/{total}] {step.summary()}"
@@ -174,33 +180,36 @@ def play_step(
         return False
 
     activate_window(hwnd)
-    time.sleep(0.2)
-    # Short retry if focus did not stick
+    time.sleep(0.08)
     import win32gui
 
     if win32gui.GetForegroundWindow() != hwnd:
         activate_window(hwnd)
-        time.sleep(0.15)
+        time.sleep(0.08)
 
     if step.type == "click":
+        # Exact recorded click first (relative coords). UIA only as fallback —
+        # timing+position must match what the user did.
+        def _click_coords() -> bool:
+            left, top, right, bottom = window_rect(hwnd)
+            x = left + step.rel_x
+            y = top + step.rel_y
+            x = min(max(x, left + 1), right - 2)
+            y = min(max(y, top + 1), bottom - 2)
+            button = "right" if step.button == "right" else "left"
+            pyautogui.click(x=x, y=y, button=button)
+            _log(log, f"  OK click {button} at screen ({x},{y}) rel ({step.rel_x},{step.rel_y})")
+            return True
+
+        if prefer_coords:
+            return _click_coords()
+
         if step.uia and step.uia.useful():
             if invoke_uia(hwnd, step.uia):
                 _log(log, f"  OK via UIA ({step.uia.name or step.uia.automation_id})")
-                time.sleep(0.25)
                 return True
             _log(log, "  UIA miss — falling back to relative coordinates")
-
-        left, top, right, bottom = window_rect(hwnd)
-        x = left + step.rel_x
-        y = top + step.rel_y
-        # Clamp inside the window rectangle (safety)
-        x = min(max(x, left + 1), right - 2)
-        y = min(max(y, top + 1), bottom - 2)
-        button = "right" if step.button == "right" else "left"
-        pyautogui.click(x=x, y=y, button=button)
-        _log(log, f"  OK click {button} at screen ({x},{y}) rel ({step.rel_x},{step.rel_y})")
-        time.sleep(0.25)
-        return True
+        return _click_coords()
 
     if step.type == "key":
         keys = _vk_to_pyautogui(step)
@@ -209,7 +218,6 @@ def play_step(
             return False
         _press_keys(keys)
         _log(log, f"  OK key {'+'.join(keys)}")
-        time.sleep(0.25)
         return True
 
     _log(log, f"FAIL step {index}: unknown type {step.type!r}")
@@ -219,7 +227,8 @@ def play_step(
 def play_document(
     doc: MacroDocument,
     *,
-    window_timeout_s: float = 60.0,
+    window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
+    pad_ms: int = DEFAULT_PAD_MS,
     on_fail: str = "abort",
     log: LogFn | None = None,
 ) -> ReplayReport:
@@ -229,14 +238,29 @@ def play_document(
         _log(log, "No steps in macro — nothing to replay.")
         return report
 
-    _log(log, f"Replaying {report.total} step(s) (window timeout={window_timeout_s:.0f}s)...")
+    _log(
+        log,
+        f"Replaying {report.total} step(s): recorded timing + {pad_ms}ms pad each, "
+        f"window timeout={window_timeout_s:.0f}s",
+    )
     for i, step in enumerate(doc.steps, start=1):
+        # Pace exactly like the recording, then add lag margin for slower PCs.
+        wait_ms = max(0, int(step.dt_ms)) + max(0, int(pad_ms))
+        if wait_ms > 0:
+            _log(
+                log,
+                f"  wait {wait_ms / 1000.0:.1f}s "
+                f"(recorded {step.dt_ms}ms + pad {pad_ms}ms) before step {i}",
+            )
+            time.sleep(wait_ms / 1000.0)
+
         ok = play_step(
             step,
             index=i,
             total=report.total,
             window_timeout_s=window_timeout_s,
             on_fail=on_fail,
+            prefer_coords=True,
             log=log,
         )
         if ok:
@@ -256,22 +280,29 @@ def play_document(
 def play_file(
     path: Path,
     *,
-    window_timeout_s: float = 60.0,
+    window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
+    pad_ms: int = DEFAULT_PAD_MS,
     on_fail: str = "abort",
     log: LogFn | None = None,
 ) -> ReplayReport:
     doc = load_macro(path)
     _log(log, f"Loaded macro: {path} ({len(doc.steps)} steps)")
     return play_document(
-        doc, window_timeout_s=window_timeout_s, on_fail=on_fail, log=log
+        doc,
+        window_timeout_s=window_timeout_s,
+        pad_ms=pad_ms,
+        on_fail=on_fail,
+        log=log,
     )
 
 
 def default_tools_base() -> Path:
-    """Desktop\\programas de teste — same convention as Stress::toolsBaseDir()."""
+    """Desktop\\programas de teste — always (same as Stress::toolsBaseDir())."""
     import os
 
     desktop = Path(os.path.expandvars(r"%USERPROFILE%\Desktop"))
+    # Localized Windows still exposes Desktop via USERPROFILE\Desktop for most setups;
+    # FOLDERID_Desktop is used on the C++ side.
     return desktop / "programas de teste"
 
 

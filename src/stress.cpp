@@ -9,6 +9,7 @@
 #define _UNICODE
 #endif
 
+#include <shellapi.h>
 #include <shlobj.h>
 #include <windows.h>
 
@@ -16,6 +17,7 @@
 #include <cctype>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -77,6 +79,40 @@ std::filesystem::path tempDir() {
         return {};
     }
     return std::filesystem::path(buffer) / L"WinAutoUpdater";
+}
+
+// Opens a GUI .exe the same way Explorer does (double-click): ShellExecute "open".
+// FurMark / Prime95 / CrystalDiskMark often refuse CreateProcess from an elevated
+// host; ShellExecute goes through the shell and matches a manual launch.
+bool openGuiExe(const std::filesystem::path& exe, std::wstring* error = nullptr) {
+    std::error_code ec;
+    if (!std::filesystem::exists(exe, ec)) {
+        if (error) {
+            *error = L"not found";
+        }
+        return false;
+    }
+    const std::wstring file = exe.wstring();
+    const std::wstring dir = exe.parent_path().wstring();
+
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"open";
+    info.lpFile = file.c_str();
+    info.lpDirectory = dir.empty() ? nullptr : dir.c_str();
+    info.nShow = SW_SHOWNORMAL;
+
+    if (ShellExecuteExW(&info) == FALSE) {
+        if (error) {
+            *error = L"ShellExecute failed (" + std::to_wstring(GetLastError()) + L")";
+        }
+        return false;
+    }
+    if (info.hProcess != nullptr) {
+        CloseHandle(info.hProcess);
+    }
+    return true;
 }
 
 // Launches a process. When stdoutFile is set the child's stdout/stderr are
@@ -395,6 +431,7 @@ std::filesystem::path desktopDir() {
 }
 
 std::filesystem::path toolsBaseDir() {
+    // Always Desktop\programas de teste — never the USB copy next to the exe.
     const auto desktop = desktopDir();
     if (desktop.empty()) {
         return {};
@@ -452,7 +489,7 @@ Config loadConfig(const std::filesystem::path& executable) {
             out << L"; stress run opens the same programs as the manual .bat (FurMark,\n";
             out << L"; Prime95, CrystalDiskMark, powerMAX, MemTest) and replays the macro.\n";
             out << L"; OpenHardwareMonitor and BatteryCare are started from the Monitor\n";
-            out << L"; button only. Tools are expected in Desktop\\programas de teste.\n\n";
+            out << L"; button only. Tools folder is ALWAYS Desktop\\programas de teste.\n\n";
             out << L"; Run the test bench automatically after a successful update.\n";
             out << L"AutoRunStress=1\n\n";
             out << L"; Replay the recorded macro (MacroHelper / Macro::play) after launch.\n";
@@ -594,11 +631,15 @@ Result launchTools(const Config& /*config*/, const Callbacks& callbacks) {
 
     const auto base = toolsBaseDir();
     result.baseDir = base.wstring();
-    log(L"Stress base folder: " + base.wstring());
+    log(L"Stress base folder (Desktop): " + base.wstring());
 
     std::error_code ec;
     if (base.empty() || !std::filesystem::is_directory(base, ec)) {
-        result.message = L"Folder \"programas de teste\" was not found on the Desktop.";
+        result.message =
+            L"Pasta \"programas de teste\" nao encontrada no Ambiente de Trabalho.\r\n"
+            L"Esperado: " +
+            (base.empty() ? std::wstring(L"%USERPROFILE%\\Desktop\\programas de teste")
+                          : base.wstring());
         log(result.message);
         return result;
     }
@@ -606,39 +647,65 @@ Result launchTools(const Config& /*config*/, const Callbacks& callbacks) {
     // Same order as the manual .bat. MemTest is intentionally last and then
     // forced to the foreground (it often has no taskbar button).
     status(L"Opening the test tools...");
-    const auto launchTool = [&](const std::wstring& label, const std::wstring& relative) {
-        const std::filesystem::path tool = base / relative;
-        if (!std::filesystem::exists(tool, ec)) {
-            log(L"Missing " + label + L": " + tool.wstring());
+
+    // Each tool may exist under slightly different relative paths on shop PCs.
+    const auto resolveTool = [&](std::initializer_list<const wchar_t*> candidates)
+        -> std::filesystem::path {
+        for (const wchar_t* rel : candidates) {
+            const std::filesystem::path candidate = base / rel;
+            if (std::filesystem::exists(candidate, ec)) {
+                return candidate;
+            }
+        }
+        return {};
+    };
+
+    const auto launchTool = [&](const std::wstring& label,
+                                std::initializer_list<const wchar_t*> candidates) {
+        const std::filesystem::path tool = resolveTool(candidates);
+        if (tool.empty()) {
+            std::wstring tried = L"Missing " + label + L" under " + base.wstring() + L" — tried:";
+            for (const wchar_t* rel : candidates) {
+                tried += L"\r\n  • ";
+                tried += rel;
+            }
+            log(tried);
             ++result.failed;
             return;
         }
-        if (launchProcess(tool.wstring(), L"", tool.parent_path(), false, false)) {
-            log(L"Launched " + label + L": " + tool.wstring());
+        std::wstring launchError;
+        if (openGuiExe(tool, &launchError)) {
+            log(L"Opened " + label + L": " + tool.wstring());
             ++result.launched;
         } else {
-            log(L"Failed to launch " + label + L": " + tool.wstring());
+            log(L"Failed to open " + label + L": " + tool.wstring() + L" — " + launchError);
             ++result.failed;
         }
     };
-    launchTool(L"FurMark", L"FurMark2_x64\\FurMark_GUI.exe");
+
+    launchTool(L"FurMark", {L"FurMark2_x64\\FurMark_GUI.exe", L"FurMark\\FurMark_GUI.exe",
+                            L"FurMark_GUI.exe"});
     Sleep(400);
-    launchTool(L"Prime95", L"Prime95\\prime95.exe");
+    launchTool(L"Prime95", {L"Prime95\\prime95.exe", L"prime95.exe"});
     Sleep(400);
-    launchTool(L"CrystalDiskMark", L"CrystalDiskMark9\\DiskMark64.exe");
+    launchTool(L"CrystalDiskMark", {L"CrystalDiskMark9\\DiskMark64.exe",
+                                    L"CrystalDiskMark\\DiskMark64.exe", L"DiskMark64.exe"});
     Sleep(400);
-    launchTool(L"powerMAX", L"powerMAX\\powerMAX.exe");
+    launchTool(L"powerMAX", {L"powerMAX\\powerMAX.exe", L"powerMAX_x64.exe", L"powerMAX.exe",
+                             L"powerMAX_x32.exe"});
     Sleep(400);
-    launchTool(L"MemTest", L"memtest.exe");
+    launchTool(L"MemTest", {L"memtest.exe", L"MemTest\\memtest.exe"});
 
     // Let MemTest's window appear, then stack it on top.
     Sleep(1500);
     focusProcessWindows(L"memtest.exe");
-    log(L"MemTest brought to foreground (started last).");
+    if (result.launched > 0) {
+        log(L"MemTest brought to foreground (started last).");
+    }
 
     result.ok = result.launched > 0;
     result.message = L"Launched " + std::to_wstring(result.launched) + L" test(s), " +
-                     std::to_wstring(result.failed) + L" failed.";
+                     std::to_wstring(result.failed) + L" failed. Base: " + base.wstring();
     log(result.message);
     return result;
 }

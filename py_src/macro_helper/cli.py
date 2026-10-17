@@ -67,8 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--timeout",
         type=float,
-        default=60.0,
-        help="Seconds to wait for each target window (default: 60)",
+        default=15.0,
+        help="Seconds to wait for each target window after the timed delay (default: 15)",
+    )
+    p.add_argument(
+        "--pad-seconds",
+        type=float,
+        default=4.0,
+        help="Extra seconds added on top of every recorded gap (default: 4, use 3..5)",
     )
     p.add_argument(
         "--on-fail",
@@ -115,10 +121,12 @@ def main(argv: list[str] | None = None) -> int:
         from .schema import format_list, load_macro
 
         print(f"DPI awareness: {dpi}", flush=True)
+        if not path.exists():
+            print(f"Macro file not found: {path}", file=sys.stderr)
+            return 1
         doc = load_macro(path)
         print(format_list(doc))
         return 0
-
     if args.record:
         hide_console_window()
         from .gui import run_record_gui
@@ -149,9 +157,11 @@ def main(argv: list[str] | None = None) -> int:
             print("No stress tools launched — aborting play.", file=sys.stderr)
             return 1
 
+    pad_ms = int(max(0.0, float(args.pad_seconds)) * 1000)
     report = play_file(
         path,
         window_timeout_s=float(args.timeout),
+        pad_ms=pad_ms,
         on_fail=args.on_fail,
         log=_tee,
     )

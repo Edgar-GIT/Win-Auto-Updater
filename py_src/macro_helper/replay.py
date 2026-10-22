@@ -156,28 +156,55 @@ def _send_vk(vk: int) -> None:
     ctypes.windll.user32.SendInput(2, ctypes.byref(arr), ctypes.sizeof(INPUT))
 
 
+# Dialogs that only appear on some PCs (e.g. MemTest OOM) — skip if absent.
+_OPTIONAL_TITLE_MARKERS = (
+    "could not allocate",
+    "out of memory",
+    "insufficient memory",
+    "failed to allocate",
+    "not enough memory",
+    "unable to allocate",
+)
+
+
+def is_optional_dialog(step: Step) -> bool:
+    title = (step.window.title or "").lower()
+    return any(m in title for m in _OPTIONAL_TITLE_MARKERS)
+
+
 def play_step(
     step: Step,
     *,
     index: int,
     total: int,
     window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
-    on_fail: str = "abort",  # abort | continue
+    on_fail: str = "continue",  # abort | continue
     prefer_coords: bool = True,
     log: LogFn | None = None,
-) -> bool:
+) -> str:
+    """Returns 'ok' | 'fail' | 'skip'."""
     label = f"[{index}/{total}] {step.summary()}"
     _log(log, f"STEP {label}")
 
-    hwnd = find_window(step.window, timeout_s=window_timeout_s)
+    optional = is_optional_dialog(step)
+    # Optional OOM/error boxes: short wait — they either pop quickly or never.
+    timeout = min(window_timeout_s, 4.0) if optional else window_timeout_s
+    hwnd = find_window(step.window, timeout_s=timeout)
     if not hwnd:
+        if optional:
+            _log(
+                log,
+                f"SKIP step {index}: optional dialog not shown "
+                f"(title={step.window.title!r}) — continuing",
+            )
+            return "skip"
         msg = (
             f"FAIL step {index}: window not found "
             f"(proc={step.window.process!r} class={step.window.class_name!r} "
-            f"title={step.window.title!r}) after {window_timeout_s:.0f}s"
+            f"title={step.window.title!r}) after {timeout:.0f}s"
         )
         _log(log, msg)
-        return False
+        return "fail"
 
     activate_window(hwnd)
     time.sleep(0.08)
@@ -202,26 +229,26 @@ def play_step(
             return True
 
         if prefer_coords:
-            return _click_coords()
+            return "ok" if _click_coords() else "fail"
 
         if step.uia and step.uia.useful():
             if invoke_uia(hwnd, step.uia):
                 _log(log, f"  OK via UIA ({step.uia.name or step.uia.automation_id})")
-                return True
+                return "ok"
             _log(log, "  UIA miss — falling back to relative coordinates")
-        return _click_coords()
+        return "ok" if _click_coords() else "fail"
 
     if step.type == "key":
         keys = _vk_to_pyautogui(step)
         if not keys:
             _log(log, f"FAIL step {index}: empty key combo")
-            return False
+            return "fail"
         _press_keys(keys)
         _log(log, f"  OK key {'+'.join(keys)}")
-        return True
+        return "ok"
 
     _log(log, f"FAIL step {index}: unknown type {step.type!r}")
-    return False
+    return "fail"
 
 
 def play_document(
@@ -229,7 +256,7 @@ def play_document(
     *,
     window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
     pad_ms: int = DEFAULT_PAD_MS,
-    on_fail: str = "abort",
+    on_fail: str = "continue",
     log: LogFn | None = None,
 ) -> ReplayReport:
     report = ReplayReport()
@@ -241,11 +268,14 @@ def play_document(
     _log(
         log,
         f"Replaying {report.total} step(s): recorded timing + {pad_ms}ms pad each, "
-        f"window timeout={window_timeout_s:.0f}s",
+        f"window timeout={window_timeout_s:.0f}s, on-fail={on_fail}",
     )
     for i, step in enumerate(doc.steps, start=1):
         # Pace exactly like the recording, then add lag margin for slower PCs.
+        # Optional dialogs (MemTest OOM): keep recorded wait short — often absent.
         wait_ms = max(0, int(step.dt_ms)) + max(0, int(pad_ms))
+        if is_optional_dialog(step):
+            wait_ms = min(wait_ms, 2500)
         if wait_ms > 0:
             _log(
                 log,
@@ -254,7 +284,7 @@ def play_document(
             )
             time.sleep(wait_ms / 1000.0)
 
-        ok = play_step(
+        result = play_step(
             step,
             index=i,
             total=report.total,
@@ -263,8 +293,10 @@ def play_document(
             prefer_coords=True,
             log=log,
         )
-        if ok:
+        if result == "ok":
             report.ok += 1
+        elif result == "skip":
+            report.skipped += 1
         else:
             report.failed += 1
             report.errors.append(f"step {i}: {step.summary()}")
@@ -282,7 +314,7 @@ def play_file(
     *,
     window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
     pad_ms: int = DEFAULT_PAD_MS,
-    on_fail: str = "abort",
+    on_fail: str = "continue",
     log: LogFn | None = None,
 ) -> ReplayReport:
     doc = load_macro(path)

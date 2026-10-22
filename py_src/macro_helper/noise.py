@@ -21,12 +21,14 @@ NOISE_PROCESSES = frozenset(
 
 
 def is_noise_process(name: str | None) -> bool:
+    # Empty name is NOT treated as noise here — OpenProcess can fail on some
+    # Windows 10 setups; the caller still records class/title as fallback.
     if not name:
-        return True
+        return False
     return name.strip().lower() in NOISE_PROCESSES
 
 
 def is_own_process(name: str | None, own_names: set[str]) -> bool:
     if not name:
-        return True
+        return False
     return name.strip().lower() in {n.lower() for n in own_names}

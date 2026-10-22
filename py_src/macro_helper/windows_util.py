@@ -39,17 +39,26 @@ def process_base_name(hwnd: int) -> str:
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         if not pid:
             return ""
-        handle = win32api.OpenProcess(
-            win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-        )
-        try:
-            # QueryFullProcessImageName via ctypes for reliability
-            buf = ctypes.create_unicode_buffer(1024)
-            size = wintypes.DWORD(1024)
-            if kernel32.QueryFullProcessImageNameW(int(handle), 0, buf, ctypes.byref(size)):
-                return Path(buf.value).name
-        finally:
-            win32api.CloseHandle(handle)
+        # Prefer limited query (works elevated→elevated on Win10/11).
+        for access in (
+            win32con.PROCESS_QUERY_LIMITED_INFORMATION,
+            win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ,
+        ):
+            try:
+                handle = win32api.OpenProcess(access, False, pid)
+            except Exception:
+                continue
+            try:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = wintypes.DWORD(1024)
+                if kernel32.QueryFullProcessImageNameW(int(handle), 0, buf, ctypes.byref(size)):
+                    return Path(buf.value).name
+                try:
+                    return Path(win32process.GetModuleFileNameEx(handle, 0)).name
+                except Exception:
+                    pass
+            finally:
+                win32api.CloseHandle(handle)
     except Exception:
         return ""
     return ""
@@ -178,14 +187,19 @@ def uia_from_point(x: int, y: int) -> UiaInfo | None:
         return None
 
 
-def snapshot_at_point(x: int, y: int) -> TargetSnapshot | None:
+def snapshot_at_point(x: int, y: int, *, include_uia: bool = False) -> TargetSnapshot | None:
+    """Window identity under a screen point.
+
+    include_uia defaults to False: UIA ElementFromPoint is slow and, when called
+    inside a low-level mouse hook (pynput), Windows 10 drops subsequent events —
+    that caused "only 2 clicks recorded". Replay uses relative coords anyway.
+    """
     hwnd = root_from_point(x, y)
     if not hwnd:
         return None
     proc = process_base_name(hwnd)
     if is_noise_process(proc):
         return None
-    left, top, _, _ = window_rect(hwnd)
     mon, dpi = monitor_and_dpi(hwnd)
     window = WindowInfo(
         process=proc,
@@ -194,7 +208,8 @@ def snapshot_at_point(x: int, y: int) -> TargetSnapshot | None:
         monitor=mon,
         dpi=dpi,
     )
-    return TargetSnapshot(hwnd=hwnd, window=window, uia=uia_from_point(x, y))
+    uia = uia_from_point(x, y) if include_uia else None
+    return TargetSnapshot(hwnd=hwnd, window=window, uia=uia)
 
 
 def snapshot_foreground() -> TargetSnapshot | None:
@@ -215,6 +230,24 @@ def snapshot_foreground() -> TargetSnapshot | None:
     return TargetSnapshot(hwnd=hwnd, window=window)
 
 
+def _title_fuzzy_bonus(want_title: str, have_title: str) -> int:
+    """Score title similarity — exact substring, or shared significant tokens."""
+    want = (want_title or "").strip().lower()
+    have = (have_title or "").strip().lower()
+    if not want:
+        return 0
+    if want in have or have in want:
+        return 3
+    # "Could not allocate 4095 MB" vs "Could not allocate 2048 MB"
+    want_tokens = [t for t in want.replace("-", " ").split() if len(t) > 2 and not t.isdigit()]
+    if not want_tokens:
+        return 0
+    hits = sum(1 for t in want_tokens if t in have)
+    if hits >= max(2, len(want_tokens) - 1):
+        return 2
+    return 0
+
+
 def _match_score(hwnd: int, want: WindowInfo) -> int:
     proc = process_base_name(hwnd)
     if not proc or proc.lower() != want.process.lower():
@@ -224,19 +257,51 @@ def _match_score(hwnd: int, want: WindowInfo) -> int:
     title = title_of(hwnd)
     if want.class_name and cls.lower() == want.class_name.lower():
         score += 5
-    if want.title and want.title.lower() in title.lower():
-        score += 3
+    # Title was recorded — require a fuzzy hit so we don't click a different
+    # dialog of the same process (e.g. main MemTest vs OOM message box).
+    if want.title:
+        title_bonus = _title_fuzzy_bonus(want.title, title)
+        if title_bonus <= 0:
+            return -1
+        score += title_bonus
     if win32gui.IsWindowVisible(hwnd):
         score += 1
     return score
 
 
+def process_running(image_name: str) -> bool:
+    """True if the process still has a visible top-level window (fast, no ACL noise)."""
+    if not image_name:
+        return False
+    want = image_name.lower()
+    found = {"ok": False}
+
+    def _enum(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        if process_base_name(hwnd).lower() == want:
+            found["ok"] = True
+            return False
+        return True
+
+    try:
+        win32gui.EnumWindows(_enum, None)
+    except Exception:
+        return False
+    return bool(found["ok"])
+
+
 def find_window(want: WindowInfo, timeout_s: float = 60.0, poll_s: float = 0.25) -> int:
-    """Wait until a top-level window matching process (+ optional class/title) appears."""
+    """Wait until a top-level window matching process (+ optional class/title) appears.
+
+    Fail-fast if the process is not running for a few seconds (avoids 15s waits after
+    MemTest already exited). Falls back to process-only match if class/title differ.
+    """
     if not want.process:
         return 0
     deadline = time.monotonic() + timeout_s
-    best = 0
+    missing_proc_since: float | None = None
+
     while True:
         candidates: list[tuple[int, int]] = []
 
@@ -251,8 +316,17 @@ def find_window(want: WindowInfo, timeout_s: float = 60.0, poll_s: float = 0.25)
         win32gui.EnumWindows(_enum, None)
         if candidates:
             candidates.sort(reverse=True)
-            best = candidates[0][1]
-            return best
+            return candidates[0][1]
+
+        # Process gone → don't burn the full timeout (common after MemTest closes).
+        if not process_running(want.process):
+            if missing_proc_since is None:
+                missing_proc_since = time.monotonic()
+            elif time.monotonic() - missing_proc_since >= 2.0:
+                return 0
+        else:
+            missing_proc_since = None
+
         if time.monotonic() >= deadline:
             return 0
         time.sleep(poll_s)

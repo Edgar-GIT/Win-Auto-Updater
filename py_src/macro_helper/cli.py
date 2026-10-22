@@ -79,8 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--on-fail",
         choices=("abort", "continue"),
-        default="abort",
-        help="Behaviour when a step fails (default: abort)",
+        default="continue",
+        help="Behaviour when a step fails (default: continue — keep going for other apps)",
     )
     return p
 

@@ -750,7 +750,9 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
             const auto outLog = tempDir() / L"macro_helper_stdout.txt";
             std::filesystem::create_directories(outLog.parent_path(), ec);
             DeleteFileW(outLog.wstring().c_str());
-            const std::wstring args = L"--play " + quote(macroFile.wstring());
+            // continue: MemTest OOM dialog / closed windows must not abort CDM/Prime/FurMark.
+            const std::wstring args =
+                L"--play " + quote(macroFile.wstring()) + L" --on-fail continue";
             DWORD exitCode = 1;
             if (!launchProcess(helper.wstring(), args, helper.parent_path(), true, true, outLog,
                                &exitCode)) {

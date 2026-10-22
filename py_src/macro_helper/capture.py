@@ -113,13 +113,33 @@ class MacroRecorder:
         self._last_ts = now
         return max(0, dt)
 
+    def _is_ignored_hwnd(self, hwnd: int) -> bool:
+        """True if hwnd belongs to the MacroHelper window tree."""
+        if not hwnd:
+            return False
+        ignored = self._ignore_hwnds()
+        if not ignored:
+            return False
+        if hwnd in ignored:
+            return True
+        try:
+            import win32gui
+
+            for root in ignored:
+                try:
+                    if win32gui.IsChild(root, hwnd):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
     def _ignored_point(self, x: int, y: int) -> bool:
         from .windows_util import root_from_point
 
         hwnd = root_from_point(x, y)
-        if hwnd and hwnd in self._ignore_hwnds():
-            return True
-        return False
+        return self._is_ignored_hwnd(hwnd)
 
     def _append(self, step: Step) -> None:
         with self._lock:
@@ -134,12 +154,13 @@ class MacroRecorder:
             return
         if self._ignored_point(int(x), int(y)):
             return
-        snap = snapshot_at_point(int(x), int(y))
+        # Fast path only — never call UIA here (drops events on Win10 LL hooks).
+        snap = snapshot_at_point(int(x), int(y), include_uia=False)
         if snap is None:
             return
         if is_own_process(snap.window.process, self._own) or is_noise_process(snap.window.process):
             return
-        if snap.hwnd in self._ignore_hwnds():
+        if self._is_ignored_hwnd(snap.hwnd):
             return
         left, top, _, _ = window_rect(snap.hwnd)
         step = Step(
@@ -149,7 +170,7 @@ class MacroRecorder:
             button="right" if button == mouse.Button.right else "left",
             rel_x=int(x) - left,
             rel_y=int(y) - top,
-            uia=snap.uia,
+            uia=None,
         )
         self._append(step)
 
@@ -185,12 +206,14 @@ class MacroRecorder:
 
     def _on_press(self, key: keyboard.Key | keyboard.KeyCode) -> None | bool:
         # F10 always stops recording (already swallowed by win32_event_filter).
+        # Do not return False here — on some Win10 builds that tears down the
+        # whole pynput pipeline; stop() is enough.
         if key == keyboard.Key.f10:
             was_active = self._active
             self._active = False
             if was_active and self._on_stop:
                 self._on_stop()
-            return False  # stop key listener
+            return None
 
         if not self._active or self._paused:
             return None
@@ -202,7 +225,7 @@ class MacroRecorder:
             return None
         if is_own_process(snap.window.process, self._own) or is_noise_process(snap.window.process):
             return None
-        if snap.hwnd in self._ignore_hwnds():
+        if self._is_ignored_hwnd(snap.hwnd):
             return None
 
         vk, name = _key_identity(key)

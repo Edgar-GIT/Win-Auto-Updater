@@ -58,8 +58,6 @@ class RecordApp:
 
         self.root = tk.Tk()
         self.root.title("Win Auto Updater — MacroHelper")
-        self.root.geometry("560x560")
-        self.root.minsize(480, 440)
         self.root.configure(bg=BG)
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -72,7 +70,7 @@ class RecordApp:
         self._path_var = tk.StringVar(value=str(macro_path))
 
         self._build()
-        self.root.update_idletasks()
+        self._fit_window()
         self._refresh_ignore_hwnds()
 
         self.recorder = MacroRecorder(
@@ -139,17 +137,30 @@ class RecordApp:
         btn.pack(**pack)
         return btn
 
+    def _fit_window(self) -> None:
+        """Open large enough to show the full UI (Win10 DPI-safe)."""
+        self.root.update_idletasks()
+        # Requested size from content, with a comfortable floor.
+        req_w = max(640, self.root.winfo_reqwidth() + 24)
+        req_h = max(740, self.root.winfo_reqheight() + 24)
+        self.root.minsize(600, 680)
+        # Center on screen
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = max(0, (sw - req_w) // 2)
+        y = max(0, (sh - req_h) // 2)
+        self.root.geometry(f"{req_w}x{req_h}+{x}+{y}")
+
     def _build(self) -> None:
-        # Header (SingleUpdate-style blue bar)
-        header = tk.Frame(self.root, bg=HEADER, height=72)
+        # Header (SingleUpdate-style blue bar) — tall enough for title + subtitle
+        header = tk.Frame(self.root, bg=HEADER)
         header.pack(fill=tk.X)
-        header.pack_propagate(False)
         title_row = tk.Frame(header, bg=HEADER)
-        title_row.pack(fill=tk.BOTH, expand=True, padx=16, pady=10)
+        title_row.pack(fill=tk.X, padx=18, pady=14)
         tk.Label(
             title_row,
             text="MacroHelper",
-            font=("Segoe UI", 16, "bold"),
+            font=("Segoe UI", 18, "bold"),
             bg=HEADER,
             fg="#FFFFFF",
             anchor="w",
@@ -157,11 +168,11 @@ class RecordApp:
         tk.Label(
             title_row,
             text="Gravação de macro · Win Auto Updater",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10),
             bg=HEADER,
             fg=HEADER_SUB,
             anchor="w",
-        ).pack(fill=tk.X)
+        ).pack(fill=tk.X, pady=(2, 0))
 
         # Main actions
         actions_card = self._card(self.root, fill=tk.X)
@@ -325,23 +336,15 @@ class RecordApp:
         return 0
 
     def _refresh_ignore_hwnds(self) -> None:
+        """Only the MacroHelper top-level HWND — IsChild covers descendants.
+
+        Do NOT EnumWindows and add every window with GetParent==0 (Win10 bug that
+        could mark unrelated HWNDs and drop most clicks).
+        """
         try:
-            import win32gui
-
             hwnd = int(self.root.winfo_id())
-            # Tk on Windows: winfo_id is the HWND of the Tk child; get the root.
             root = root_of(hwnd) or hwnd
-            self._ignore_hwnds = {root, hwnd}
-            # Also ignore any owned popups
-            def _enum(h, _):
-                try:
-                    if win32gui.GetParent(h) in self._ignore_hwnds or h == root:
-                        self._ignore_hwnds.add(int(h))
-                except Exception:
-                    pass
-                return True
-
-            win32gui.EnumWindows(_enum, None)
+            self._ignore_hwnds = {int(root), int(hwnd)}
         except Exception:
             self._ignore_hwnds = set()
 
@@ -478,7 +481,8 @@ class RecordApp:
             self.macro_path = Path(path)
 
     def _on_step_threadsafe(self, step) -> None:
-        self.root.after(0, lambda: self.listbox.insert(tk.END, step.summary()))
+        summary = step.summary()
+        self.root.after(0, lambda s=summary: self.listbox.insert(tk.END, s))
 
     def _on_status_threadsafe(self, status: str) -> None:
         def _apply() -> None:

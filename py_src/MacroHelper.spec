@@ -10,11 +10,15 @@ block_cipher = None
 # Bundle tkinter + Tcl/Tk runtime (missing from embeddable Python builds).
 _tk_datas, _tk_binaries, _tk_hidden = collect_all('tkinter')
 
+# MacroHelper icon — window + exe.
+_icon = 'assets/macro_icon.ico'
+
 a = Analysis(
     ['run_macro_helper.py'],
     pathex=['.'],
     binaries=_tk_binaries,
-    datas=_tk_datas,
+    datas=_tk_datas + [(_icon, '.')],
+
     hiddenimports=[
         'tkinter',
         'tkinter.filedialog',
@@ -58,4 +62,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=_icon,
 )

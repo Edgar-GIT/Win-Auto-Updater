@@ -14,6 +14,42 @@ from .dpi import enable_dpi_awareness
 from .schema import empty_document, load_macro, save_macro
 from .windows_util import root_of
 
+# Match SingleUpdate Fluent palette (src/app.cpp).
+BG = "#F3F3F3"
+HEADER = "#0067C0"
+HEADER_SUB = "#D5E7FA"
+CARD = "#FFFFFF"
+BORDER = "#DFDFDF"
+TEXT = "#1B1B1B"
+TEXT_SEC = "#606060"
+ACCENT = "#0067C0"
+ACCENT_DARK = "#004E94"
+RED = "#C42B1C"
+AMBER = "#9D5D00"
+TERMINAL_BG = "#1E1E1E"
+TERMINAL_FG = "#CCCCCC"
+
+
+def _resolve_icon() -> Path | None:
+    names = ("macro_icon.ico", "icon.ico")
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        exe_dir = Path(sys.executable).resolve().parent
+        for name in names:
+            if meipass:
+                candidates.append(Path(meipass) / name)
+            candidates.append(exe_dir / name)
+    # Dev / source tree
+    here = Path(__file__).resolve().parent
+    for name in names:
+        candidates.append(here.parent / "assets" / name)
+        candidates.append(here.parents[1] / "resources" / name)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
 
 class RecordApp:
     def __init__(self, macro_path: Path) -> None:
@@ -21,11 +57,15 @@ class RecordApp:
         self.dpi_mode = enable_dpi_awareness()
 
         self.root = tk.Tk()
-        self.root.title("MacroHelper — Record")
-        self.root.geometry("520x480")
-        self.root.minsize(420, 360)
+        self.root.title("Win Auto Updater — MacroHelper")
+        self.root.geometry("560x560")
+        self.root.minsize(480, 440)
+        self.root.configure(bg=BG)
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._icon_path = _resolve_icon()
+        self._apply_icon()
 
         self._ignore_hwnds: set[int] = set()
         self._status = tk.StringVar(value="Parado")
@@ -45,83 +85,209 @@ class RecordApp:
         # Refresh HWND set periodically (window can be recreated / moved).
         self.root.after(1000, self._poll_hwnds)
 
+    def _apply_icon(self) -> None:
+        if not self._icon_path:
+            return
+        try:
+            self.root.iconbitmap(default=str(self._icon_path))
+        except Exception:
+            try:
+                self.root.iconbitmap(str(self._icon_path))
+            except Exception:
+                pass
+
+    def _card(self, parent: tk.Misc, **pack) -> tk.Frame:
+        outer = tk.Frame(parent, bg=BG)
+        outer.pack(**pack)
+        card = tk.Frame(outer, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+        return card
+
+    def _btn(
+        self,
+        parent: tk.Misc,
+        text: str,
+        command,
+        *,
+        primary: bool = False,
+        danger: bool = False,
+        **pack,
+    ) -> tk.Button:
+        if danger:
+            bg, fg, active = RED, "#FFFFFF", "#9E2216"
+        elif primary:
+            bg, fg, active = ACCENT, "#FFFFFF", ACCENT_DARK
+        else:
+            bg, fg, active = CARD, TEXT, "#EDEDED"
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            font=("Segoe UI", 10, "bold"),
+            bg=bg,
+            fg=fg,
+            activebackground=active,
+            activeforeground=fg,
+            relief=tk.FLAT,
+            bd=0,
+            padx=12,
+            pady=8,
+            cursor="hand2",
+            highlightthickness=1 if not primary and not danger else 0,
+            highlightbackground=BORDER,
+        )
+        btn.pack(**pack)
+        return btn
+
     def _build(self) -> None:
-        pad = {"padx": 10, "pady": 6}
-        top = tk.Frame(self.root)
-        top.pack(fill=tk.X, **pad)
+        # Header (SingleUpdate-style blue bar)
+        header = tk.Frame(self.root, bg=HEADER, height=72)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        title_row = tk.Frame(header, bg=HEADER)
+        title_row.pack(fill=tk.BOTH, expand=True, padx=16, pady=10)
+        tk.Label(
+            title_row,
+            text="MacroHelper",
+            font=("Segoe UI", 16, "bold"),
+            bg=HEADER,
+            fg="#FFFFFF",
+            anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            title_row,
+            text="Gravação de macro · Win Auto Updater",
+            font=("Segoe UI", 9),
+            bg=HEADER,
+            fg=HEADER_SUB,
+            anchor="w",
+        ).pack(fill=tk.X)
 
-        self.btn_start = tk.Button(
-            top,
-            text="Iniciar gravação",
-            font=("Segoe UI", 12, "bold"),
-            bg="#c62828",
-            fg="white",
-            activebackground="#b71c1c",
-            command=self.start_recording,
-            height=2,
+        # Main actions
+        actions_card = self._card(self.root, fill=tk.X)
+        inner = tk.Frame(actions_card, bg=CARD)
+        inner.pack(fill=tk.X, padx=10, pady=10)
+
+        row = tk.Frame(inner, bg=CARD)
+        row.pack(fill=tk.X)
+        self.btn_start = self._btn(
+            row,
+            "Iniciar gravação",
+            self.start_recording,
+            danger=True,
+            side=tk.LEFT,
+            fill=tk.X,
+            expand=True,
+            padx=(0, 6),
         )
-        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
-
-        self.btn_stop = tk.Button(
-            top,
-            text="Parar (F10)",
-            font=("Segoe UI", 12, "bold"),
-            command=self.stop_recording,
-            height=2,
-            state=tk.DISABLED,
+        self.btn_start.configure(font=("Segoe UI", 11, "bold"), pady=12)
+        self.btn_stop = self._btn(
+            row,
+            "Parar (F10)",
+            self.stop_recording,
+            primary=True,
+            side=tk.LEFT,
+            fill=tk.X,
+            expand=True,
+            padx=(6, 0),
         )
-        self.btn_stop.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self.btn_stop.configure(font=("Segoe UI", 11, "bold"), pady=12, state=tk.DISABLED)
 
-        status_row = tk.Frame(self.root)
-        status_row.pack(fill=tk.X, **pad)
+        status_row = tk.Frame(inner, bg=CARD)
+        status_row.pack(fill=tk.X, pady=(10, 0))
         self.status_label = tk.Label(
             status_row,
             textvariable=self._status,
             font=("Segoe UI", 11, "bold"),
-            fg="#333333",
+            bg=CARD,
+            fg=TEXT,
             anchor="w",
         )
         self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(status_row, text="DPI: " + self.dpi_mode, fg="#666666").pack(side=tk.RIGHT)
+        tk.Label(
+            status_row,
+            text="DPI: " + self.dpi_mode,
+            font=("Segoe UI", 9),
+            bg=CARD,
+            fg=TEXT_SEC,
+        ).pack(side=tk.RIGHT)
 
-        path_row = tk.Frame(self.root)
-        path_row.pack(fill=tk.X, **pad)
-        tk.Entry(path_row, textvariable=self._path_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
+        # Path
+        path_card = self._card(self.root, fill=tk.X)
+        path_inner = tk.Frame(path_card, bg=CARD)
+        path_inner.pack(fill=tk.X, padx=10, pady=8)
+        tk.Label(
+            path_inner,
+            text="Ficheiro da macro",
+            font=("Segoe UI", 9),
+            bg=CARD,
+            fg=TEXT_SEC,
+            anchor="w",
+        ).pack(fill=tk.X)
+        path_row = tk.Frame(path_inner, bg=CARD)
+        path_row.pack(fill=tk.X, pady=(4, 0))
+        entry = tk.Entry(
+            path_row,
+            textvariable=self._path_var,
+            font=("Segoe UI", 10),
+            bg="#FAFAFA",
+            fg=TEXT,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
         )
-        tk.Button(path_row, text="…", width=3, command=self._browse).pack(side=tk.LEFT)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6, padx=(0, 6))
+        self._btn(path_row, "…", self._browse, side=tk.LEFT).configure(padx=10, pady=6)
 
-        mid = tk.Frame(self.root)
-        mid.pack(fill=tk.BOTH, expand=True, **pad)
-        tk.Label(mid, text="Passos capturados:", anchor="w").pack(fill=tk.X)
-        list_frame = tk.Frame(mid)
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        # Steps list
+        list_card = self._card(self.root, fill=tk.BOTH, expand=True)
+        list_inner = tk.Frame(list_card, bg=CARD)
+        list_inner.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        tk.Label(
+            list_inner,
+            text="Passos capturados",
+            font=("Segoe UI", 9),
+            bg=CARD,
+            fg=TEXT_SEC,
+            anchor="w",
+        ).pack(fill=tk.X)
+        list_frame = tk.Frame(list_inner, bg=TERMINAL_BG)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         scroll = tk.Scrollbar(list_frame)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.listbox = tk.Listbox(list_frame, yscrollcommand=scroll.set, font=("Consolas", 10))
-        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.listbox = tk.Listbox(
+            list_frame,
+            yscrollcommand=scroll.set,
+            font=("Consolas", 10),
+            bg=TERMINAL_BG,
+            fg=TERMINAL_FG,
+            selectbackground=ACCENT,
+            selectforeground="#FFFFFF",
+            relief=tk.FLAT,
+            activestyle="none",
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
         scroll.config(command=self.listbox.yview)
 
-        actions = tk.Frame(self.root)
-        actions.pack(fill=tk.X, **pad)
-        tk.Button(actions, text="Desfazer", command=self.undo).pack(side=tk.LEFT, padx=2)
-        tk.Button(actions, text="Apagar selecionado", command=self.delete_selected).pack(
-            side=tk.LEFT, padx=2
-        )
-        tk.Button(actions, text="Limpar tudo", command=self.clear_all).pack(side=tk.LEFT, padx=2)
-        self.btn_pause = tk.Button(actions, text="Pausa", command=self.toggle_pause)
-        self.btn_pause.pack(side=tk.LEFT, padx=2)
+        # Edit actions
+        edit = tk.Frame(list_inner, bg=CARD)
+        edit.pack(fill=tk.X, pady=(8, 0))
+        self._btn(edit, "Desfazer", self.undo, side=tk.LEFT, padx=(0, 4))
+        self._btn(edit, "Apagar selecionado", self.delete_selected, side=tk.LEFT, padx=4)
+        self._btn(edit, "Limpar tudo", self.clear_all, side=tk.LEFT, padx=4)
+        self.btn_pause = self._btn(edit, "Pausa", self.toggle_pause, side=tk.LEFT, padx=4)
+        self.btn_pause.configure(state=tk.DISABLED)
 
-        bottom = tk.Frame(self.root)
-        bottom.pack(fill=tk.X, **pad)
-        tk.Button(
-            bottom,
-            text="Guardar macro",
-            font=("Segoe UI", 10, "bold"),
-            command=self.save,
-        ).pack(side=tk.LEFT, padx=2)
-        tk.Button(bottom, text="Abrir pasta", command=self.open_folder).pack(side=tk.LEFT, padx=2)
-        tk.Button(bottom, text="Carregar…", command=self.load).pack(side=tk.LEFT, padx=2)
+        # Bottom bar
+        bottom_card = self._card(self.root, fill=tk.X)
+        bottom = tk.Frame(bottom_card, bg=CARD)
+        bottom.pack(fill=tk.X, padx=10, pady=8)
+        self._btn(bottom, "Guardar macro", self.save, primary=True, side=tk.LEFT, padx=(0, 4))
+        self._btn(bottom, "Abrir pasta", self.open_folder, side=tk.LEFT, padx=4)
+        self._btn(bottom, "Carregar…", self.load, side=tk.LEFT, padx=4)
         self._topmost = tk.BooleanVar(value=True)
 
         def _toggle_topmost() -> None:
@@ -132,6 +298,12 @@ class RecordApp:
             text="Sempre no topo",
             variable=self._topmost,
             command=_toggle_topmost,
+            font=("Segoe UI", 9),
+            bg=CARD,
+            fg=TEXT_SEC,
+            activebackground=CARD,
+            selectcolor=CARD,
+            highlightthickness=0,
         ).pack(side=tk.RIGHT)
 
         hint = (
@@ -139,9 +311,14 @@ class RecordApp:
             "F10 para a gravação (consumido). Cliques nesta janela não são gravados.\n"
             "Corre como Administrador se as apps alvo forem elevadas."
         )
-        tk.Label(self.root, text=hint, justify=tk.LEFT, fg="#555555").pack(
-            fill=tk.X, padx=10, pady=(0, 8)
-        )
+        tk.Label(
+            self.root,
+            text=hint,
+            justify=tk.LEFT,
+            font=("Segoe UI", 9),
+            bg=BG,
+            fg=TEXT_SEC,
+        ).pack(fill=tk.X, padx=16, pady=(0, 10))
 
     def run(self) -> int:
         self.root.mainloop()
@@ -175,13 +352,13 @@ class RecordApp:
     def _set_recording_ui(self, recording: bool) -> None:
         if recording:
             self._status.set("A GRAVAR")
-            self.status_label.configure(fg="#c62828")
+            self.status_label.configure(fg=RED)
             self.btn_start.configure(state=tk.DISABLED)
             self.btn_stop.configure(state=tk.NORMAL)
             self.btn_pause.configure(state=tk.NORMAL, text="Pausa")
         else:
             self._status.set("Parado")
-            self.status_label.configure(fg="#333333")
+            self.status_label.configure(fg=TEXT)
             self.btn_start.configure(state=tk.NORMAL)
             self.btn_stop.configure(state=tk.DISABLED)
             self.btn_pause.configure(state=tk.DISABLED, text="Pausa")
@@ -204,7 +381,7 @@ class RecordApp:
         self.recorder.set_paused(paused)
         self.btn_pause.configure(text="Retomar" if paused else "Pausa")
         self._status.set("Em pausa" if paused else "A GRAVAR")
-        self.status_label.configure(fg="#ef6c00" if paused else "#c62828")
+        self.status_label.configure(fg=AMBER if paused else RED)
 
     def undo(self) -> None:
         step = self.recorder.undo()
@@ -309,7 +486,7 @@ class RecordApp:
                 self._set_recording_ui(True)
             elif status == "paused":
                 self._status.set("Em pausa")
-                self.status_label.configure(fg="#ef6c00")
+                self.status_label.configure(fg=AMBER)
             else:
                 self._set_recording_ui(False)
 

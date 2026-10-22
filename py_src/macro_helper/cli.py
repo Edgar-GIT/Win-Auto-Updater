@@ -60,6 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="List steps in a macro file",
     )
     p.add_argument(
+        "--fix-sizes",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Enrich macro.json with window size + nx/ny from open apps "
+            "(run at the SAME scale as the original recording)"
+        ),
+    )
+    p.add_argument(
         "--replay-launch",
         action="store_true",
         help="Before --play, also launch the five Desktop stress tools",
@@ -102,12 +113,13 @@ def main(argv: list[str] | None = None) -> int:
             bool(args.record),
             args.play is not None,
             args.list is not None,
+            args.fix_sizes is not None,
         ]
     )
     if modes == 0:
         args.record = True
     if modes > 1:
-        print("Use only one of --record / --play / --list.", file=sys.stderr)
+        print("Use only one of --record / --play / --list / --fix-sizes.", file=sys.stderr)
         return 2
 
     if sys.platform != "win32":
@@ -129,6 +141,20 @@ def main(argv: list[str] | None = None) -> int:
         doc = load_macro(path)
         print(format_list(doc))
         return 0
+    if args.fix_sizes is not None:
+        path = Path(args.fix_sizes) if args.fix_sizes else macro
+        from .replay import enrich_macro_sizes
+
+        print(f"DPI awareness: {dpi}", flush=True)
+        if not path.exists():
+            print(f"Macro file not found: {path}", file=sys.stderr)
+            return 1
+        print(
+            "Open the stress tools at the SAME Windows scale as the recording, then wait...",
+            flush=True,
+        )
+        n = enrich_macro_sizes(path, log=print)
+        return 0 if n > 0 else 1
     if args.record:
         hide_console_window()
         from .gui import run_record_gui

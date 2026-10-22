@@ -162,14 +162,22 @@ class MacroRecorder:
             return
         if self._is_ignored_hwnd(snap.hwnd):
             return
-        left, top, _, _ = window_rect(snap.hwnd)
+        left, top, right, bottom = window_rect(snap.hwnd)
+        width = max(1, snap.window.width or (right - left))
+        height = max(1, snap.window.height or (bottom - top))
+        rel_x = int(x) - left
+        rel_y = int(y) - top
+        snap.window.width = width
+        snap.window.height = height
         step = Step(
             type="click",
             window=snap.window,
             dt_ms=self._dt_ms(),
             button="right" if button == mouse.Button.right else "left",
-            rel_x=int(x) - left,
-            rel_y=int(y) - top,
+            rel_x=rel_x,
+            rel_y=rel_y,
+            nx=rel_x / float(width),
+            ny=rel_y / float(height),
             uia=None,
         )
         self._append(step)

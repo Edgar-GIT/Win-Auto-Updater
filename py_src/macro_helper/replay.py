@@ -9,7 +9,7 @@ from typing import Callable
 import pyautogui
 
 from .schema import MacroDocument, Step, load_macro
-from .windows_util import activate_window, find_window, invoke_uia, monitor_and_dpi, window_rect
+from .windows_util import activate_window, find_window, invoke_uia, window_rect
 
 LogFn = Callable[[str], None]
 
@@ -219,27 +219,28 @@ def play_step(
         time.sleep(0.08)
 
     if step.type == "click":
-        # Relative coords, scaled when the live window size/DPI differs from the
-        # recording (e.g. 100% → 150% scale at 1920×1080).
+        # Cross-DPI: prefer normalized (nx,ny) = fraction of window size.
+        # Blind monitor-DPI multiply is wrong for these apps (overshoots Y).
         def _click_coords() -> bool:
             left, top, right, bottom = window_rect(hwnd)
             cur_w = max(1, right - left)
             cur_h = max(1, bottom - top)
-            sx = sy = 1.0
             scale_note = ""
-            if step.window.width > 0 and step.window.height > 0:
+            if step.nx >= 0.0 and step.ny >= 0.0:
+                rel_x = int(round(step.nx * cur_w))
+                rel_y = int(round(step.ny * cur_h))
+                scale_note = f" norm=({step.nx:.4f},{step.ny:.4f})"
+            elif step.window.width > 0 and step.window.height > 0:
                 sx = cur_w / float(step.window.width)
                 sy = cur_h / float(step.window.height)
+                rel_x = int(round(step.rel_x * sx))
+                rel_y = int(round(step.rel_y * sy))
                 if abs(sx - 1.0) > 0.02 or abs(sy - 1.0) > 0.02:
                     scale_note = f" size-scale=({sx:.2f},{sy:.2f})"
             else:
-                recorded_dpi = step.window.dpi or 96
-                _, cur_dpi = monitor_and_dpi(hwnd)
-                if recorded_dpi > 0 and cur_dpi > 0 and recorded_dpi != cur_dpi:
-                    sx = sy = cur_dpi / float(recorded_dpi)
-                    scale_note = f" dpi-scale={sx:.2f} ({recorded_dpi}->{cur_dpi})"
-            rel_x = int(round(step.rel_x * sx))
-            rel_y = int(round(step.rel_y * sy))
+                rel_x = step.rel_x
+                rel_y = step.rel_y
+                scale_note = " (no norm/size - re-record once for DPI portability)"
             x = left + rel_x
             y = top + rel_y
             x = min(max(x, left + 1), right - 2)
@@ -345,6 +346,17 @@ def play_file(
 ) -> ReplayReport:
     doc = load_macro(path)
     _log(log, f"Loaded macro: {path} ({len(doc.steps)} steps)")
+    missing_norm = sum(
+        1
+        for s in doc.steps
+        if s.type == "click" and (s.nx < 0.0 or s.ny < 0.0) and s.window.width <= 0
+    )
+    if missing_norm:
+        _log(
+            log,
+            f"WARNING: {missing_norm} click(s) lack size/norm data - DPI scale "
+            f"will NOT be applied (re-record once for 100%/150% portability).",
+        )
     return play_document(
         doc,
         window_timeout_s=window_timeout_s,
@@ -352,6 +364,51 @@ def play_file(
         on_fail=on_fail,
         log=log,
     )
+
+
+def enrich_macro_sizes(
+    path: Path,
+    *,
+    timeout_s: float = 8.0,
+    log: LogFn | None = None,
+) -> int:
+    """Fill width/height/nx/ny from currently open windows.
+
+    Must run at the SAME Windows scale as when the macro was recorded
+    (e.g. 100% if that is where clicks were captured). Open the stress tools
+    first, then run: MacroHelper.exe --fix-sizes macro.json
+    """
+    from .schema import save_macro
+
+    doc = load_macro(path)
+    updated = 0
+    for i, step in enumerate(doc.steps, start=1):
+        if step.type != "click":
+            continue
+        hwnd = find_window(step.window, timeout_s=timeout_s)
+        if not hwnd:
+            _log(log, f"step {i}: window not found - skipped")
+            continue
+        left, top, right, bottom = window_rect(hwnd)
+        w = max(1, right - left)
+        h = max(1, bottom - top)
+        step.window.width = w
+        step.window.height = h
+        step.nx = step.rel_x / float(w)
+        step.ny = step.rel_y / float(h)
+        # Keep rel in sync with the measured window (same scale as recording).
+        updated += 1
+        _log(
+            log,
+            f"step {i}: size={w}x{h} norm=({step.nx:.4f},{step.ny:.4f}) "
+            f"proc={step.window.process}",
+        )
+    if updated:
+        save_macro(path, doc)
+        _log(log, f"Updated {updated} click step(s) in {path}")
+    else:
+        _log(log, "No steps updated - open the target apps and retry.")
+    return updated
 
 
 def default_tools_base() -> Path:

@@ -103,12 +103,36 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     return win32gui.GetWindowRect(hwnd)
 
 
-def monitor_and_dpi(hwnd: int) -> tuple[int, int]:
+def monitor_effective_dpi(hwnd: int) -> int:
+    """Monitor scale DPI (96=100%, 120=125%, 144=150%).
+
+    Prefer GetDpiForMonitor — GetDpiForWindow often stays at 96 for older
+    DPI-unaware apps (MemTest, Prime95, …), which broke 100%↔150% replay.
+    """
+    try:
+        monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        get_for_mon = getattr(ctypes.windll.shcore, "GetDpiForMonitor", None)
+        if get_for_mon is not None and monitor:
+            dpi_x = ctypes.c_uint(0)
+            dpi_y = ctypes.c_uint(0)
+            # MDT_EFFECTIVE_DPI = 0
+            if int(get_for_mon(monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y))) == 0:
+                return int(dpi_x.value or dpi_y.value or 96) or 96
+    except Exception:
+        pass
     try:
         get_dpi = getattr(user32, "GetDpiForWindow", None)
-        dpi = int(get_dpi(hwnd)) if get_dpi else 96
+        if get_dpi is not None:
+            return int(get_dpi(hwnd) or 96) or 96
+    except Exception:
+        pass
+    return 96
+
+
+def monitor_and_dpi(hwnd: int) -> tuple[int, int]:
+    try:
+        dpi = monitor_effective_dpi(hwnd)
         monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-        # Best-effort ordinal among active monitors (diagnostic only).
         index = 0
         try:
             import win32api

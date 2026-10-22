@@ -43,6 +43,10 @@ class Step:
     button: str = "left"  # left | right
     rel_x: int = 0
     rel_y: int = 0
+    # Fraction of window size at capture (0..1). Preferred for cross-DPI replay.
+    # -1 = unset (legacy macros).
+    nx: float = -1.0
+    ny: float = -1.0
     uia: UiaInfo | None = None
     # key
     vk: int = 0
@@ -106,6 +110,9 @@ class MacroDocument:
                 item["button"] = step.button
                 item["rel_x"] = step.rel_x
                 item["rel_y"] = step.rel_y
+                if step.nx >= 0.0 and step.ny >= 0.0:
+                    item["nx"] = round(step.nx, 6)
+                    item["ny"] = round(step.ny, 6)
                 if step.uia and step.uia.useful():
                     item["uia"] = {
                         "automation_id": step.uia.automation_id,
@@ -156,6 +163,12 @@ def step_from_dict(raw: dict[str, Any]) -> Step:
         step.button = "right" if str(raw.get("button", "left")).lower().startswith("r") else "left"
         step.rel_x = int(raw.get("rel_x", 0) or 0)
         step.rel_y = int(raw.get("rel_y", 0) or 0)
+        if "nx" in raw and "ny" in raw:
+            step.nx = float(raw.get("nx", -1) if raw.get("nx") is not None else -1)
+            step.ny = float(raw.get("ny", -1) if raw.get("ny") is not None else -1)
+        elif step.window.width > 0 and step.window.height > 0:
+            step.nx = step.rel_x / float(step.window.width)
+            step.ny = step.rel_y / float(step.window.height)
         step.uia = _uia_from_dict(raw.get("uia"))
     elif kind == "key":
         mods = raw.get("modifiers") or {}

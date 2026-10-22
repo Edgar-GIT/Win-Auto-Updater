@@ -43,7 +43,11 @@ class ReplayReport:
 
 
 def _log(log: LogFn | None, message: str) -> None:
-    print(message, flush=True)
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        safe = message.encode("ascii", errors="replace").decode("ascii")
+        print(safe, flush=True)
     if log:
         log(message)
 
@@ -195,7 +199,7 @@ def play_step(
             _log(
                 log,
                 f"SKIP step {index}: optional dialog not shown "
-                f"(title={step.window.title!r}) — continuing",
+                f"(title={step.window.title!r}) - continuing",
             )
             return "skip"
         msg = (
@@ -233,7 +237,7 @@ def play_step(
                 _, cur_dpi = monitor_and_dpi(hwnd)
                 if recorded_dpi > 0 and cur_dpi > 0 and recorded_dpi != cur_dpi:
                     sx = sy = cur_dpi / float(recorded_dpi)
-                    scale_note = f" dpi-scale={sx:.2f} ({recorded_dpi}→{cur_dpi})"
+                    scale_note = f" dpi-scale={sx:.2f} ({recorded_dpi}->{cur_dpi})"
             rel_x = int(round(step.rel_x * sx))
             rel_y = int(round(step.rel_y * sy))
             x = left + rel_x
@@ -257,7 +261,7 @@ def play_step(
             if invoke_uia(hwnd, step.uia):
                 _log(log, f"  OK via UIA ({step.uia.name or step.uia.automation_id})")
                 return "ok"
-            _log(log, "  UIA miss — falling back to relative coordinates")
+            _log(log, "  UIA miss - falling back to relative coordinates")
         return "ok" if _click_coords() else "fail"
 
     if step.type == "key":
@@ -284,7 +288,7 @@ def play_document(
     report = ReplayReport()
     report.total = len(doc.steps)
     if not doc.steps:
-        _log(log, "No steps in macro — nothing to replay.")
+        _log(log, "No steps in macro - nothing to replay.")
         return report
 
     _log(

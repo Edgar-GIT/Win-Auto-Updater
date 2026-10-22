@@ -9,6 +9,18 @@ import sys
 def ensure_stdio() -> None:
     if sys.platform != "win32":
         return
+
+    # Prefer UTF-8 with replace so log lines never crash on cp1252 consoles
+    # (arrows, accents in window titles, etc.).
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     try:
         import ctypes
         import msvcrt
@@ -32,7 +44,11 @@ def ensure_stdio() -> None:
             return
         try:
             fd = msvcrt.open_osfhandle(int(handle), os.O_TEXT)
-            setattr(sys, stream_name, open(fd, "w", encoding="utf-8", errors="replace", closefd=False))
+            setattr(
+                sys,
+                stream_name,
+                open(fd, "w", encoding="utf-8", errors="replace", closefd=False),
+            )
         except Exception:
             pass
 

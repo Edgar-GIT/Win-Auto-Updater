@@ -85,7 +85,7 @@ def probe_replay_timing() -> ReplayTiming:
     pad_ms = max(500, min(4500, pad_ms))
     timeout_s = max(5.0, min(18.0, timeout_s))
     detail = (
-        f"PC speed factor={factor:.2f} → pad={pad_ms}ms, "
+        f"PC speed factor={factor:.2f} -> pad={pad_ms}ms, "
         f"timeout={timeout_s:.1f}s (auto)"
     )
     return ReplayTiming(pad_ms=pad_ms, timeout_s=timeout_s, factor=factor, detail=detail)

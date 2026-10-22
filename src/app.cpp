@@ -710,9 +710,10 @@ void App::layoutControls() {
     }
 
     if (uiDoneMode_) {
-        // Ecrã final — 2 filas limpas (sem Dump UI):
+        // Ecrã final:
         //   [Abrir ferramentas] [Correr testes + macro] [Sensores]
-        //   [Gravar macro] [Fechar e reabrir] [Desinstalar] [Fechar]
+        //   [Reabrir após reinício]
+        //   [Desinstalar] [Fechar]
         const int actionH = 44;
         const int bottomY = buttonY;
         const int actionY = bottomY - actionH - 12;
@@ -721,9 +722,9 @@ void App::layoutControls() {
         const int reopenY = actionY - reopenH - 10;
         const int actionW = (contentW - gap * 2) / 3;
         const int actionStartX = margin;
-        const int bottomCount = 4;
-        const int bottomW = (contentW - gap * (bottomCount - 1)) / bottomCount;
-        const int bottomStartX = margin;
+        const int bottomW = 220;
+        const int bottomGap = 16;
+        const int bottomStartX = (width - (bottomW * 2 + bottomGap)) / 2;
 
         if (phaseLabel_) {
             MoveWindow(phaseLabel_, margin, 120, contentW, 30, TRUE);
@@ -749,19 +750,16 @@ void App::layoutControls() {
                        TRUE);
         }
         if (recordButton_) {
-            ShowWindow(recordButton_, SW_SHOW);
-            MoveWindow(recordButton_, bottomStartX, bottomY, bottomW, kButtonHeight, TRUE);
+            ShowWindow(recordButton_, SW_HIDE);
         }
         if (closeReopenButton_) {
-            MoveWindow(closeReopenButton_, bottomStartX + bottomW + gap, bottomY, bottomW,
-                       kButtonHeight, TRUE);
+            ShowWindow(closeReopenButton_, SW_HIDE);
         }
         if (uninstallButton_) {
-            MoveWindow(uninstallButton_, bottomStartX + (bottomW + gap) * 2, bottomY, bottomW,
-                       kButtonHeight, TRUE);
+            MoveWindow(uninstallButton_, bottomStartX, bottomY, bottomW, kButtonHeight, TRUE);
         }
         if (closeButton_) {
-            MoveWindow(closeButton_, bottomStartX + (bottomW + gap) * 3, bottomY, bottomW,
+            MoveWindow(closeButton_, bottomStartX + bottomW + bottomGap, bottomY, bottomW,
                        kButtonHeight, TRUE);
         }
         return;
@@ -1014,12 +1012,12 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
             ShowWindow(monitorButton_, SW_HIDE);
         }
     }
-    if (recordButton_ && success) {
-        ShowWindow(recordButton_, SW_SHOW);
-        EnableWindow(recordButton_, TRUE);
-        SetWindowTextW(recordButton_, L"Gravar macro");
-    } else if (recordButton_) {
+    // Gravar macro / Fechar e reabrir — só no ecrã inicial (o switch já controla a reabertura).
+    if (recordButton_) {
         ShowWindow(recordButton_, SW_HIDE);
+    }
+    if (closeReopenButton_) {
+        ShowWindow(closeReopenButton_, SW_HIDE);
     }
     if (reopenToggleButton_) {
         if (success) {
@@ -1032,10 +1030,6 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         } else {
             ShowWindow(reopenToggleButton_, SW_HIDE);
         }
-    }
-    if (closeReopenButton_) {
-        ShowWindow(closeReopenButton_, SW_SHOW);
-        EnableWindow(closeReopenButton_, TRUE);
     }
 
     showActionButtons(true);
@@ -1050,20 +1044,50 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
 }
 
 void App::performUninstall() {
-    const int confirm =
-        MessageBoxW(hwnd_,
-                    L"Remove the scheduled reopen task and uninstall this tool?\r\n\r\n"
-                    L"SingleUpdate.exe on the USB is kept until the next restart.",
-                    L"Win Auto Updater", MB_OKCANCEL | MB_ICONQUESTION);
+    const int confirm = MessageBoxW(
+        hwnd_,
+        L"Desinstalar o Win Auto Updater?\r\n\r\n"
+        L"• Remove a tarefa de reabertura automática\r\n"
+        L"• Apaga ficheiros temporários e o estado guardado\r\n"
+        L"• O SingleUpdate.exe na pen é marcado para apagar\r\n"
+        L"  e desaparece depois de reiniciares o PC\r\n\r\n"
+        L"Isto não se pode anular. Continuar?",
+        L"Desinstalar", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
     if (confirm != IDOK) {
         return;
     }
 
+    // Feedback imediato no ecrã (antes do trabalho em background).
+    if (summaryLabel_) {
+        SetWindowTextW(summaryLabel_,
+                       L"A DESINSTALAR…\r\n\r\n"
+                       L"A remover a tarefa agendada e a marcar a ferramenta para "
+                       L"apagamento no próximo reinício.\r\n\r\n"
+                       L"Aguarda um momento.");
+        ShowWindow(summaryLabel_, SW_SHOW);
+    }
     if (uninstallButton_) {
         EnableWindow(uninstallButton_, FALSE);
         SetWindowTextW(uninstallButton_, L"A desinstalar...");
     }
+    if (runTestsButton_) {
+        EnableWindow(runTestsButton_, FALSE);
+    }
+    if (openToolsButton_) {
+        EnableWindow(openToolsButton_, FALSE);
+    }
+    if (monitorButton_) {
+        EnableWindow(monitorButton_, FALSE);
+    }
+    if (reopenToggleButton_) {
+        EnableWindow(reopenToggleButton_, FALSE);
+    }
+    if (closeButton_) {
+        EnableWindow(closeButton_, FALSE);
+    }
     applyHint(L"A desinstalar — a remover a tarefa agendada...");
+    InvalidateRect(hwnd_, nullptr, TRUE);
+    UpdateWindow(hwnd_);
 
     // Task Scheduler COM can block for seconds on the UI thread — do it off-thread.
     const auto exe = currentExecutable();
@@ -2068,7 +2092,8 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     beginUpdate(true);
                     return 0;
                 case IDC_UNINSTALL:
-                    if (uiDoneMode_) {
+                    // Disponível no ecrã inicial e no ecrã final.
+                    if (uiDoneMode_ || choosing_) {
                         performUninstall();
                     }
                     return 0;
@@ -2170,9 +2195,20 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_APP_UNINSTALL_DONE: {
+            choosing_ = false;
+            uiDoneMode_ = true;
             if (uninstallButton_) {
                 EnableWindow(uninstallButton_, FALSE);
                 SetWindowTextW(uninstallButton_, L"Desinstalado");
+            }
+            if (updateButton_) {
+                ShowWindow(updateButton_, SW_HIDE);
+            }
+            if (updateNoDriversButton_) {
+                ShowWindow(updateNoDriversButton_, SW_HIDE);
+            }
+            if (stressToggleButton_) {
+                ShowWindow(stressToggleButton_, SW_HIDE);
             }
             if (runTestsButton_) {
                 ShowWindow(runTestsButton_, SW_HIDE);
@@ -2194,18 +2230,23 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (summaryLabel_) {
                 SetWindowTextW(summaryLabel_,
-                               L"O Win Auto Updater foi desinstalado.\r\n\r\n"
-                               L"A tarefa agendada de reabertura foi removida.\r\n"
-                               L"O SingleUpdate.exe na pen desaparece no próximo reinício.\r\n\r\n"
-                               L"Clica em Fechar para sair.");
+                               L"DESINSTALAÇÃO CONCLUÍDA\r\n\r\n"
+                               L"• A tarefa de reabertura automática foi removida.\r\n"
+                               L"• Ficheiros temporários e estado foram limpos.\r\n"
+                               L"• O SingleUpdate.exe na pen será apagado no próximo "
+                               L"reinício do PC.\r\n\r\n"
+                               L"Clica em Fechar para sair. Reinicia o PC quando quiseres "
+                               L"completar a remoção.");
                 ShowWindow(summaryLabel_, SW_SHOW);
             }
             allowClose_ = true;
             if (closeButton_) {
                 EnableWindow(closeButton_, TRUE);
                 ShowWindow(closeButton_, SW_SHOW);
+                SetWindowTextW(closeButton_, L"Fechar");
             }
-            applyHint(L"Desinstalação concluída. Clica em Fechar.");
+            setPhase(L"Desinstalado — reinicia para concluir");
+            layoutControls();
             InvalidateRect(hwnd_, nullptr, TRUE);
             return 0;
         }

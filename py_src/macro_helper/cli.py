@@ -157,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.replay_launch:
         n = launch_stress_tools(log=_tee)
         if n == 0:
-            print("No stress tools launched — aborting play.", file=sys.stderr)
+            print("No stress tools launched - aborting play.", file=sys.stderr)
             return 1
 
     timing = probe_replay_timing()

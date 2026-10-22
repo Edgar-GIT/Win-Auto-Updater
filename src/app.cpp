@@ -276,18 +276,22 @@ int App::run() {
     // Progress sink is unused — progress goes only to the bar/label via postProgress.
     logger_.setProgressSink([](std::wstring_view) {});
 
-    // The mode chooser is always shown, even when a previous run was interrupted
-    // by a restart, so the user always has the "Install all updates" button.
+    // After a reboot mid-update, state.json has phase=waiting_reboot — jump
+    // straight back into the update worker (same mode as before the restart).
+    // Fresh launches still open on the chooser.
     {
         StateManager stateManager;
         const auto savedState = stateManager.load();
         if (savedState.phase == L"waiting_reboot") {
-            appendLog(L"An interrupted update was found — click an update button to continue.");
+            appendLog(L"Reinício detetado — a retomar as atualizações automaticamente.");
+            setPhase(L"A retomar após reinício");
+            setCurrent(savedState.withoutDrivers
+                           ? L"A continuar (Windows sem drivers)..."
+                           : L"A continuar as atualizações Windows...");
+            beginUpdate(savedState.withoutDrivers);
         }
     }
 
-    // Otherwise the worker is only launched once the user picks an update mode,
-    // so the window opens on the mode chooser instead of starting work immediately.
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);

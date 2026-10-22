@@ -1047,10 +1047,14 @@ void App::performUninstall() {
     const int confirm = MessageBoxW(
         hwnd_,
         L"Desinstalar o Win Auto Updater?\r\n\r\n"
-        L"• Remove a tarefa de reabertura automática\r\n"
-        L"• Apaga ficheiros temporários e o estado guardado\r\n"
-        L"• O SingleUpdate.exe na pen é marcado para apagar\r\n"
-        L"  e desaparece depois de reiniciares o PC\r\n\r\n"
+        L"Vai apagar:\r\n"
+        L"• Tarefa de reabertura automática\r\n"
+        L"• Pasta Ambiente de Trabalho\\programas de teste\r\n"
+        L"• macro.json / macro.json.log (Ambiente de Trabalho e pen)\r\n"
+        L"• MacroHelper.exe, stress.ini, uia_stress.ps1\r\n"
+        L"• Estado temporário\r\n"
+        L"• SingleUpdate.exe (apagado no próximo reinício)\r\n\r\n"
+        L"(Os instaladores NVIDIA/AMD no Ambiente de Trabalho mantêm-se.)\r\n\r\n"
         L"Isto não se pode anular. Continuar?",
         L"Desinstalar", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
     if (confirm != IDOK) {
@@ -1061,8 +1065,8 @@ void App::performUninstall() {
     if (summaryLabel_) {
         SetWindowTextW(summaryLabel_,
                        L"A DESINSTALAR…\r\n\r\n"
-                       L"A remover a tarefa agendada e a marcar a ferramenta para "
-                       L"apagamento no próximo reinício.\r\n\r\n"
+                       L"A remover a tarefa agendada, a pasta programas de teste, "
+                       L"a macro, o MacroHelper e os ficheiros na pen.\r\n\r\n"
                        L"Aguarda um momento.");
         ShowWindow(summaryLabel_, SW_SHOW);
     }
@@ -1097,7 +1101,9 @@ void App::performUninstall() {
         StateManager stateManager;
         stateManager.remove();
         Cleanup::removeTempFiles();
+        Cleanup::removeBundle(exe);
         if (!exe.empty()) {
+            // Self-delete on reboot (file is locked while we run).
             MoveFileExW(exe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
         }
         PostMessageW(hwnd_, WM_APP_UNINSTALL_DONE, 0, 0);
@@ -2231,12 +2237,13 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (summaryLabel_) {
                 SetWindowTextW(summaryLabel_,
                                L"DESINSTALAÇÃO CONCLUÍDA\r\n\r\n"
-                               L"• A tarefa de reabertura automática foi removida.\r\n"
-                               L"• Ficheiros temporários e estado foram limpos.\r\n"
-                               L"• O SingleUpdate.exe na pen será apagado no próximo "
+                               L"• Tarefa de reabertura removida.\r\n"
+                               L"• Pasta programas de teste apagada (Ambiente de Trabalho).\r\n"
+                               L"• macro.json / .log, MacroHelper, stress.ini e "
+                               L"uia_stress.ps1 removidos.\r\n"
+                               L"• O SingleUpdate.exe na pen é apagado no próximo "
                                L"reinício do PC.\r\n\r\n"
-                               L"Clica em Fechar para sair. Reinicia o PC quando quiseres "
-                               L"completar a remoção.");
+                               L"Clica em Fechar. Reinicia o PC para completar a remoção.");
                 ShowWindow(summaryLabel_, SW_SHOW);
             }
             allowClose_ = true;

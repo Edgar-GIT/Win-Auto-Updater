@@ -2,8 +2,9 @@
 
 #include <string>
 
-// Detects the installed graphics adapter and downloads the matching driver
-// installer (or a download-page shortcut) to the user's Desktop.
+// Detects the installed graphics adapter and copies the matching driver
+// installer from Desktop\programas de teste onto the Desktop
+// (nvidia_app.exe / amd_drivers.exe).
 namespace Drivers {
 
 enum class Vendor {
@@ -18,7 +19,7 @@ struct Result {
     Vendor vendor = Vendor::None;
     std::wstring vendorName;
     bool detected = false;
-    bool downloaded = false;
+    bool downloaded = false;  // true when the installer was copied to the Desktop
     bool shortcutCreated = false;
     std::wstring savedPath;
     std::wstring message;

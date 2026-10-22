@@ -9,7 +9,7 @@ from typing import Callable
 import pyautogui
 
 from .schema import MacroDocument, Step, load_macro
-from .windows_util import activate_window, find_window, invoke_uia, window_rect
+from .windows_util import activate_window, find_window, invoke_uia, monitor_and_dpi, window_rect
 
 LogFn = Callable[[str], None]
 
@@ -215,17 +215,39 @@ def play_step(
         time.sleep(0.08)
 
     if step.type == "click":
-        # Exact recorded click first (relative coords). UIA only as fallback —
-        # timing+position must match what the user did.
+        # Relative coords, scaled when the live window size/DPI differs from the
+        # recording (e.g. 100% → 150% scale at 1920×1080).
         def _click_coords() -> bool:
             left, top, right, bottom = window_rect(hwnd)
-            x = left + step.rel_x
-            y = top + step.rel_y
+            cur_w = max(1, right - left)
+            cur_h = max(1, bottom - top)
+            sx = sy = 1.0
+            scale_note = ""
+            if step.window.width > 0 and step.window.height > 0:
+                sx = cur_w / float(step.window.width)
+                sy = cur_h / float(step.window.height)
+                if abs(sx - 1.0) > 0.02 or abs(sy - 1.0) > 0.02:
+                    scale_note = f" size-scale=({sx:.2f},{sy:.2f})"
+            else:
+                recorded_dpi = step.window.dpi or 96
+                _, cur_dpi = monitor_and_dpi(hwnd)
+                if recorded_dpi > 0 and cur_dpi > 0 and recorded_dpi != cur_dpi:
+                    sx = sy = cur_dpi / float(recorded_dpi)
+                    scale_note = f" dpi-scale={sx:.2f} ({recorded_dpi}→{cur_dpi})"
+            rel_x = int(round(step.rel_x * sx))
+            rel_y = int(round(step.rel_y * sy))
+            x = left + rel_x
+            y = top + rel_y
             x = min(max(x, left + 1), right - 2)
             y = min(max(y, top + 1), bottom - 2)
             button = "right" if step.button == "right" else "left"
             pyautogui.click(x=x, y=y, button=button)
-            _log(log, f"  OK click {button} at screen ({x},{y}) rel ({step.rel_x},{step.rel_y})")
+            _log(
+                log,
+                f"  OK click {button} at screen ({x},{y}) "
+                f"rel ({rel_x},{rel_y}) recorded ({step.rel_x},{step.rel_y})"
+                f"{scale_note}",
+            )
             return True
 
         if prefer_coords:

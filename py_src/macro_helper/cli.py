@@ -67,14 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--timeout",
         type=float,
-        default=15.0,
-        help="Seconds to wait for each target window after the timed delay (default: 15)",
+        default=None,
+        metavar="SEC",
+        help="Seconds to wait for each target window (default: auto from PC speed probe)",
     )
     p.add_argument(
         "--pad-seconds",
         type=float,
-        default=4.0,
-        help="Extra seconds added on top of every recorded gap (default: 4, use 3..5)",
+        default=None,
+        metavar="SEC",
+        help="Extra seconds on top of every recorded gap (default: auto from PC speed probe)",
     )
     p.add_argument(
         "--on-fail",
@@ -150,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         log_lines.append(message)
 
     from .replay import launch_stress_tools, play_file
+    from .speed import probe_replay_timing
 
     if args.replay_launch:
         n = launch_stress_tools(log=_tee)
@@ -157,10 +160,24 @@ def main(argv: list[str] | None = None) -> int:
             print("No stress tools launched — aborting play.", file=sys.stderr)
             return 1
 
-    pad_ms = int(max(0.0, float(args.pad_seconds)) * 1000)
+    timing = probe_replay_timing()
+    _tee(timing.detail)
+    print(timing.detail, flush=True)
+
+    pad_ms = (
+        int(max(0.0, float(args.pad_seconds)) * 1000)
+        if args.pad_seconds is not None
+        else timing.pad_ms
+    )
+    timeout_s = float(args.timeout) if args.timeout is not None else timing.timeout_s
+    if args.pad_seconds is not None or args.timeout is not None:
+        override = f"Overrides: pad={pad_ms}ms timeout={timeout_s:.1f}s"
+        _tee(override)
+        print(override, flush=True)
+
     report = play_file(
         path,
-        window_timeout_s=float(args.timeout),
+        window_timeout_s=timeout_s,
         pad_ms=pad_ms,
         on_fail=args.on_fail,
         log=_tee,

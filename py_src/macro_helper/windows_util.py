@@ -201,12 +201,15 @@ def snapshot_at_point(x: int, y: int, *, include_uia: bool = False) -> TargetSna
     if is_noise_process(proc):
         return None
     mon, dpi = monitor_and_dpi(hwnd)
+    left, top, right, bottom = window_rect(hwnd)
     window = WindowInfo(
         process=proc,
         class_name=class_name_of(hwnd),
         title=title_of(hwnd),
         monitor=mon,
         dpi=dpi,
+        width=max(0, right - left),
+        height=max(0, bottom - top),
     )
     uia = uia_from_point(x, y) if include_uia else None
     return TargetSnapshot(hwnd=hwnd, window=window, uia=uia)
@@ -220,12 +223,15 @@ def snapshot_foreground() -> TargetSnapshot | None:
     if is_noise_process(proc):
         return None
     mon, dpi = monitor_and_dpi(hwnd)
+    left, top, right, bottom = window_rect(hwnd)
     window = WindowInfo(
         process=proc,
         class_name=class_name_of(hwnd),
         title=title_of(hwnd),
         monitor=mon,
         dpi=dpi,
+        width=max(0, right - left),
+        height=max(0, bottom - top),
     )
     return TargetSnapshot(hwnd=hwnd, window=window)
 

@@ -28,6 +28,10 @@ class WindowInfo:
     title: str = ""
     monitor: int = 0
     dpi: int = 96
+    # Outer window size at capture time (physical px) — used to scale clicks
+    # across DPI/scale changes (100% ↔ 150%, etc.). 0 = unknown (old macros).
+    width: int = 0
+    height: int = 0
 
 
 @dataclass
@@ -94,6 +98,8 @@ class MacroDocument:
                     "title": step.window.title,
                     "monitor": step.window.monitor,
                     "dpi": step.window.dpi,
+                    "width": step.window.width,
+                    "height": step.window.height,
                 },
             }
             if step.type == "click":
@@ -127,6 +133,8 @@ def _window_from_dict(raw: dict[str, Any] | None) -> WindowInfo:
         title=str(raw.get("title", "")),
         monitor=int(raw.get("monitor", 0) or 0),
         dpi=int(raw.get("dpi", 96) or 96),
+        width=int(raw.get("width", 0) or 0),
+        height=int(raw.get("height", 0) or 0),
     )
 
 

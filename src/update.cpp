@@ -1044,7 +1044,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             notify(Phase::CheckingAgain, L"Verifying that the system is fully up to date...");
             log(L"No updates found. Polling for catalog stabilization...");
 
-            constexpr int kMaxPollSeconds = 10;
+            constexpr int kMaxPollSeconds = 5;
             constexpr int kPollIntervalMs = 1000;
 
             for (int poll = 0; poll < kMaxPollSeconds; ++poll) {

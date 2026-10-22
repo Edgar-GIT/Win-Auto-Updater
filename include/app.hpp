@@ -102,9 +102,9 @@ private:
     std::atomic<bool> allowClose_{false};
     std::atomic<bool> uiDoneMode_{false};
 
-    std::wstring lastStatus_ = L"Starting...";
-    std::wstring lastPhase_ = L"Preparing";
-    std::wstring lastCurrent_ = L"Waiting to begin...";
+    std::wstring lastStatus_ = L"A iniciar...";
+    std::wstring lastPhase_ = L"A preparar";
+    std::wstring lastCurrent_ = L"À espera de começar...";
 
     UpdateStats stats_;    // owned/updated by the worker thread
     UpdateStats uiStats_;  // snapshot rendered by the UI thread

@@ -3,7 +3,7 @@
 #include <string>
 
 // Detects the installed graphics adapter and copies the matching driver
-// installer from Desktop\programas de teste onto the Desktop
+// installer from helpers\programas de teste onto the Desktop
 // (nvidia_app.exe / amd_drivers.exe).
 namespace Drivers {
 

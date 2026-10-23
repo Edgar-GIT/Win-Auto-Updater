@@ -29,15 +29,20 @@ std::filesystem::path desktopPath() {
     return result;
 }
 
-std::filesystem::path toolsDir() {
-    const auto desktop = desktopPath();
-    if (desktop.empty()) {
+std::filesystem::path thisExeDir() {
+    wchar_t buffer[MAX_PATH]{};
+    const DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
         return {};
     }
-    return desktop / L"programas de teste";
+    return std::filesystem::path(buffer).parent_path();
 }
 
-// Bundled installers live next to the stress tools (Desktop\programas de teste).
+// Bundled installers live in helpers\programas de teste next to SingleUpdate.
+std::filesystem::path toolsDir() {
+    return thisExeDir() / L"helpers" / L"programas de teste";
+}
+
 const wchar_t* bundledInstallerName(Drivers::Vendor vendor) {
     if (vendor == Drivers::Vendor::Nvidia) {
         return L"nvidia_app.exe";
@@ -146,7 +151,7 @@ Result downloadForSystem() {
     std::error_code ec;
     if (tools.empty() || !std::filesystem::is_directory(tools, ec)) {
         result.message =
-            L"Pasta \"programas de teste\" não encontrada no Ambiente de Trabalho "
+            L"Pasta helpers\\programas de teste não encontrada "
             L"(precisa de " +
             std::wstring(fileName) + L").";
         return result;
@@ -156,7 +161,6 @@ Result downloadForSystem() {
         return result;
     }
 
-    // Overwrite any previous copy on the Desktop.
     if (!CopyFileW(source.wstring().c_str(), target.wstring().c_str(), FALSE)) {
         result.message = L"Falha ao copiar " + std::wstring(fileName) +
                          L" para o Ambiente de Trabalho (erro " +

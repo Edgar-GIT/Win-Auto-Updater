@@ -43,13 +43,11 @@ void deleteNowOrOnReboot(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path, ec)) {
         return;
     }
-    // Prefer immediate delete; if locked (running exe, open handle), schedule reboot wipe.
     if (std::filesystem::is_directory(path, ec)) {
         std::filesystem::remove_all(path, ec);
         if (!ec) {
             return;
         }
-        // Directory still there — best-effort file-by-file with reboot fallback.
         for (std::filesystem::recursive_directory_iterator it(path, ec), end;
              !ec && it != end; it.increment(ec)) {
             if (it->is_regular_file(ec)) {
@@ -88,28 +86,26 @@ void Cleanup::removeTempFiles() {
 }
 
 void Cleanup::removeBundle(const std::filesystem::path& executable) {
+    // Canonical layout: Desktop\helpers\ (tools, macro, MacroHelper, ini, …).
+    if (!executable.empty()) {
+        deleteIfExists(executable.parent_path() / L"helpers");
+    }
+
+    // Legacy locations from older deploys (best-effort).
     const auto desktop = desktopDir();
     if (!desktop.empty()) {
-        // Stress tools + recorded macro (Desktop is the canonical location).
         deleteIfExists(desktop / L"programas de teste");
         deleteIfExists(desktop / L"macro.json");
         deleteIfExists(desktop / L"macro.json.log");
         // nvidia_app.exe / amd_drivers.exe on the Desktop are kept on purpose.
     }
-
-    if (executable.empty()) {
-        return;
+    if (!executable.empty()) {
+        const auto dir = executable.parent_path();
+        deleteIfExists(dir / L"MacroHelper.exe");
+        deleteIfExists(dir / L"stress.ini");
+        deleteIfExists(dir / L"uia_stress.ps1");
+        deleteIfExists(dir / L"macro.json");
+        deleteIfExists(dir / L"macro.json.log");
+        deleteIfExists(dir / L"macro.txt");
     }
-    const auto dir = executable.parent_path();
-    if (dir.empty()) {
-        return;
-    }
-
-    // Companions on the USB / install folder (next to SingleUpdate.exe).
-    deleteIfExists(dir / L"MacroHelper.exe");
-    deleteIfExists(dir / L"stress.ini");
-    deleteIfExists(dir / L"uia_stress.ps1");
-    deleteIfExists(dir / L"macro.json");
-    deleteIfExists(dir / L"macro.json.log");
-    deleteIfExists(dir / L"macro.txt");  // legacy C++ recorder, if present
 }

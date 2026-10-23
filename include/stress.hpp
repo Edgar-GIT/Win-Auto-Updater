@@ -4,9 +4,8 @@
 #include <functional>
 #include <string>
 
-// Launches the hardware test bench ("programas de teste") that lives on the
-// user's Desktop. Tools that expose a command line are started directly;
-// GUI-only tools are driven through a PowerShell UI Automation helper.
+// Launches the hardware test bench from Desktop\helpers\programas de teste
+// (SingleUpdate.exe stays on the Desktop; everything else lives under helpers\).
 namespace Stress {
 
 struct Config {
@@ -40,12 +39,11 @@ struct Config {
     // "python" (default) → MacroHelper.exe + macro.json; "cpp" → legacy Macro::play
     // + macro.txt. Recording follows the same switch.
     std::wstring macroEngine = L"python";
-    // Macro file for the python engine. Default name is macro.json on the Desktop
-    // (easy to find after recording). Absolute paths are honored; relative paths
-    // other than the bare default resolve next to SingleUpdate.exe (USB deploy).
+    // Macro file for the python engine. Default: helpers\macro.json next to
+    // SingleUpdate.exe. Absolute paths are honored.
     std::wstring macroFile = L"macro.json";
-    // Starts the bench automatically right after a successful update, so the
-    // caller only has to deploy SingleUpdate.exe + MacroHelper.exe + macro.json.
+    // Starts the bench automatically right after a successful update.
+    // Deploy: Desktop\SingleUpdate.exe + Desktop\helpers\ (tools, macro, …).
     bool autoRunStress = true;
     std::wstring powerMaxExe = L"powerMAX\\powerMAX.exe";
     int powerMaxInstances = 1;
@@ -69,8 +67,7 @@ struct Result {
     std::wstring message;
 };
 
-// Reads stress.ini next to the executable; falls back to built-in defaults and
-// writes a commented template when the file does not exist yet.
+// Reads helpers\stress.ini; falls back to defaults and writes a template if missing.
 Config loadConfig(const std::filesystem::path& executable);
 
 // Launches the whole bench (tools + optional macro replay). Blocking; worker thread.
@@ -81,7 +78,10 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro = tr
 Result launchTools(const Config& config, const Callbacks& callbacks);
 
 bool detectPortable();
-std::filesystem::path toolsBaseDir();
+// Desktop\helpers\ next to SingleUpdate.exe (created if needed by ensureAssets).
+std::filesystem::path helpersDir(const std::filesystem::path& executable);
+std::filesystem::path toolsBaseDir(const std::filesystem::path& executable);
+std::filesystem::path toolsBaseDir();  // uses current executable
 std::filesystem::path desktopDir();
 std::filesystem::path configPath(const std::filesystem::path& executable);
 std::filesystem::path scriptPath(const std::filesystem::path& executable);
@@ -89,8 +89,7 @@ std::filesystem::path macroHelperPath(const std::filesystem::path& executable);
 std::filesystem::path macroFilePath(const std::filesystem::path& executable,
                                     const Config& config);
 
-// Writes stress.ini and uia_stress.ps1 next to the executable when missing so
-// the user can deploy the app and tune it without a rebuild.
+// Ensures helpers\ exists and writes stress.ini / uia_stress.ps1 when missing.
 void ensureAssets(const std::filesystem::path& executable);
 
 // Runs the UI Automation helper in dump mode (blocking). On success returns the

@@ -412,13 +412,12 @@ def enrich_macro_sizes(
 
 
 def default_tools_base() -> Path:
-    """Desktop\\programas de teste — always (same as Stress::toolsBaseDir())."""
-    import os
+    """helpers\\programas de teste (MacroHelper.exe lives in helpers\\)."""
+    import sys
 
-    desktop = Path(os.path.expandvars(r"%USERPROFILE%\Desktop"))
-    # Localized Windows still exposes Desktop via USERPROFILE\Desktop for most setups;
-    # FOLDERID_Desktop is used on the C++ side.
-    return desktop / "programas de teste"
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "programas de teste"
+    return Path.cwd() / "programas de teste"
 
 
 def launch_stress_tools(log: LogFn | None = None) -> int:

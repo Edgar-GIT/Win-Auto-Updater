@@ -156,7 +156,7 @@ namespace Macro {
 Recorder* Recorder::instance_ = nullptr;
 
 std::filesystem::path filePath(const std::filesystem::path& executable) {
-    return executable.parent_path() / L"macro.txt";
+    return executable.parent_path() / L"helpers" / L"macro.txt";
 }
 
 bool save(const std::filesystem::path& file, const std::vector<Event>& events) {

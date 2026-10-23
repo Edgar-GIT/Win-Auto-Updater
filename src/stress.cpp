@@ -396,6 +396,8 @@ foreach ($tool in $selected) {
 std::filesystem::path ensureUiScript(const std::filesystem::path& executable) {
     const auto path = Stress::scriptPath(executable);
     if (!path.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (out.is_open()) {
             out << kUiAutomationScript;
@@ -430,25 +432,29 @@ std::filesystem::path desktopDir() {
     return desktop;
 }
 
+std::filesystem::path helpersDir(const std::filesystem::path& executable) {
+    // Deploy layout: Desktop\SingleUpdate.exe + Desktop\helpers\...
+    return executable.parent_path() / L"helpers";
+}
+
+std::filesystem::path toolsBaseDir(const std::filesystem::path& executable) {
+    return helpersDir(executable) / L"programas de teste";
+}
+
 std::filesystem::path toolsBaseDir() {
-    // Always Desktop\programas de teste — never the USB copy next to the exe.
-    const auto desktop = desktopDir();
-    if (desktop.empty()) {
-        return {};
-    }
-    return desktop / L"programas de teste";
+    return toolsBaseDir(currentExecutable());
 }
 
 std::filesystem::path configPath(const std::filesystem::path& executable) {
-    return executable.parent_path() / L"stress.ini";
+    return helpersDir(executable) / L"stress.ini";
 }
 
 std::filesystem::path scriptPath(const std::filesystem::path& executable) {
-    return executable.parent_path() / L"uia_stress.ps1";
+    return helpersDir(executable) / L"uia_stress.ps1";
 }
 
 std::filesystem::path macroHelperPath(const std::filesystem::path& executable) {
-    return executable.parent_path() / L"MacroHelper.exe";
+    return helpersDir(executable) / L"MacroHelper.exe";
 }
 
 std::filesystem::path macroFilePath(const std::filesystem::path& executable,
@@ -460,44 +466,30 @@ std::filesystem::path macroFilePath(const std::filesystem::path& executable,
     if (name.is_absolute()) {
         return name;
     }
-    // Default bare "macro.json" → Desktop (visible after F10). Any other relative
-    // name stays next to the exe so a USB deploy can pin MacroFile=macro.json
-    // beside SingleUpdate by using an absolute path or copying the Desktop file.
-    // Prefer: if a copy already exists next to the exe (pen), use that for replay.
-    const auto besideExe = executable.parent_path() / name;
-    std::error_code ec;
-    if (std::filesystem::exists(besideExe, ec)) {
-        return besideExe;
-    }
-    const auto desktop = desktopDir();
-    if (!desktop.empty() && (name == L"macro.json" || name.filename() == L"macro.json")) {
-        return desktop / name.filename();
-    }
-    return besideExe;
+    return helpersDir(executable) / name.filename();
 }
 
 Config loadConfig(const std::filesystem::path& executable) {
     Config config;
-    const auto path = configPath(executable);
-
+    const auto helpers = helpersDir(executable);
     std::error_code ec;
+    std::filesystem::create_directories(helpers, ec);
+
+    const auto path = configPath(executable);
     if (!std::filesystem::exists(path, ec)) {
         std::wofstream out(path);
         if (out.is_open()) {
             out << L"; Win Auto Updater stress-test configuration\n\n";
-            out << L"; When UseMacro=1 and a macro was recorded next to the app, the\n";
-            out << L"; stress run opens the same programs as the manual .bat (FurMark,\n";
-            out << L"; Prime95, CrystalDiskMark, powerMAX, MemTest) and replays the macro.\n";
-            out << L"; OpenHardwareMonitor and BatteryCare are started from the Monitor\n";
-            out << L"; button only. Tools folder is ALWAYS Desktop\\programas de teste.\n\n";
+            out << L"; Deploy: Desktop\\SingleUpdate.exe + Desktop\\helpers\\\n";
+            out << L"; Tools live in helpers\\programas de teste. Macro/MacroHelper/\n";
+            out << L"; stress.ini / uia_stress.ps1 also live under helpers\\.\n\n";
             out << L"; Run the test bench automatically after a successful update.\n";
             out << L"AutoRunStress=1\n\n";
             out << L"; Replay the recorded macro (MacroHelper / Macro::play) after launch.\n";
             out << L"UseMacro=1\n";
             out << L"; Macro engine: python (MacroHelper.exe + macro.json) or cpp (legacy).\n";
             out << L"MacroEngine=python\n";
-            out << L"; Macro file: default macro.json is recorded on the Desktop. If the same\n";
-            out << L"; file also exists next to SingleUpdate.exe (USB), replay prefers that copy.\n";
+            out << L"; Macro file (relative paths resolve under helpers\\).\n";
             out << L"MacroFile=macro.json\n";
         }
         return config;
@@ -631,14 +623,14 @@ Result launchTools(const Config& /*config*/, const Callbacks& callbacks) {
 
     const auto base = toolsBaseDir();
     result.baseDir = base.wstring();
-    log(L"Stress base folder (Desktop): " + base.wstring());
+    log(L"Stress base folder (helpers): " + base.wstring());
 
     std::error_code ec;
     if (base.empty() || !std::filesystem::is_directory(base, ec)) {
         result.message =
-            L"Pasta \"programas de teste\" nao encontrada no Ambiente de Trabalho.\r\n"
+            L"Pasta \"programas de teste\" nao encontrada em helpers\\.\r\n"
             L"Esperado: " +
-            (base.empty() ? std::wstring(L"%USERPROFILE%\\Desktop\\programas de teste")
+            (base.empty() ? std::wstring(L"%USERPROFILE%\\Desktop\\helpers\\programas de teste")
                           : base.wstring());
         log(result.message);
         return result;
@@ -739,8 +731,8 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
         const auto helper = macroHelperPath(exe);
         const auto macroFile = macroFilePath(exe, config);
         if (!std::filesystem::exists(helper, ec)) {
-            log(L"MacroHelper.exe not found next to SingleUpdate.exe (" + helper.wstring() +
-                L"). Deploy MacroHelper.exe or set MacroEngine=cpp.");
+            log(L"MacroHelper.exe not found in helpers\\ (" + helper.wstring() +
+                L"). Copy the helpers\\ folder next to SingleUpdate.exe.");
         } else if (!std::filesystem::exists(macroFile, ec)) {
             log(L"No macro recorded yet (" + macroFile.wstring() +
                 L"). Click \"Record macro\", capture the clicks, then press F10.");
@@ -797,6 +789,8 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
 }
 
 void ensureAssets(const std::filesystem::path& executable) {
+    std::error_code ec;
+    std::filesystem::create_directories(helpersDir(executable), ec);
     // loadConfig writes the stress.ini template when the file is missing.
     (void)loadConfig(executable);
     (void)ensureUiScript(executable);
@@ -805,12 +799,8 @@ void ensureAssets(const std::filesystem::path& executable) {
 bool dumpUiTree(const std::filesystem::path& executable, std::wstring* dumpLog) {
     const auto script = ensureUiScript(executable);
 
-    // Write the dump next to the executable so it is easy to find and send back.
-    std::filesystem::path log = executable.parent_path() / L"uia_dump.txt";
+    std::filesystem::path log = helpersDir(executable) / L"uia_dump.txt";
     std::error_code ec;
-    if (log.parent_path().empty()) {
-        log = tempDir() / L"uia_dump.txt";
-    }
     std::filesystem::create_directories(log.parent_path(), ec);
     DeleteFileW(log.wstring().c_str());
     if (dumpLog) {
@@ -819,7 +809,7 @@ bool dumpUiTree(const std::filesystem::path& executable, std::wstring* dumpLog) 
 
     const std::wstring psArgs = L"-NoProfile -ExecutionPolicy Bypass -File " +
                                 quote(script.wstring()) + L" -Mode dump -Base " +
-                                quote(toolsBaseDir().wstring());
+                                quote(toolsBaseDir(executable).wstring());
     // stdout+stderr are redirected into the dump file, so PowerShell errors show up too.
     return launchProcess(L"powershell.exe", psArgs, {}, true, true, log);
 }

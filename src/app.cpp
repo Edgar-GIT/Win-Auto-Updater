@@ -154,11 +154,12 @@ const wchar_t* kChooserHelp =
     L"  • Interruptor abaixo — testes de stress após a atualização\r\n"
     L"\r\n"
     L"STRESS / MACRO\r\n"
-    L"  Ferramentas: SEMPRE Ambiente de Trabalho\\programas de teste\r\n"
+    L"  Deploy: Ambiente de Trabalho\\SingleUpdate.exe + helpers\\\r\n"
+    L"  Ferramentas: helpers\\programas de teste\r\n"
     L"  1. Gravar macro — abre o gravador (Iniciar gravação)\r\n"
     L"  2. Abrir só as ferramentas — abre as 5 apps (MemTest por cima)\r\n"
     L"  3. Clica manualmente nas apps enquanto grava\r\n"
-    L"  4. F10 — guarda Ambiente de Trabalho\\macro.json\r\n"
+    L"  4. F10 — guarda helpers\\macro.json\r\n"
     L"  5. Correr testes + macro — testa o replay automaticamente\r\n"
     L"  • Monitorizar sensores — OpenHardwareMonitor (+ BatteryCare)";
 
@@ -232,8 +233,7 @@ int App::run() {
         return 1;
     }
 
-    // Write stress.ini and uia_stress.ps1 next to the executable so they can be
-    // tuned on the target machine without a rebuild.
+    // Ensure Desktop\helpers\ + stress.ini / uia_stress.ps1 exist.
     Stress::ensureAssets(currentExecutable());
     // Default the chooser's "auto stress" toggle to the AutoRunStress setting.
     autoStressAfterUpdate_ = Stress::loadConfig(currentExecutable()).autoRunStress;
@@ -616,8 +616,9 @@ bool App::createUi() {
         ShowWindow(summaryLabel_, SW_SHOW);
     }
     appendLog(L"Win Auto Updater iniciado.");
-    appendLog(L"Pasta das ferramentas: Ambiente de Trabalho\\programas de teste (sempre)");
-    appendLog(L"Macro: Gravar macro → Abrir só as ferramentas → clicar nas apps → F10 → "
+    appendLog(L"Pasta helpers: " + Stress::helpersDir(currentExecutable()).wstring());
+    appendLog(L"Ferramentas: helpers\\programas de teste | Macro: helpers\\macro.json");
+    appendLog(L"Macro: Gravar macro → Abrir só as ferramentas → clicar → F10 → "
               L"Correr testes + macro.");
     return true;
 }
@@ -1053,9 +1054,7 @@ void App::performUninstall() {
         L"Desinstalar o Win Auto Updater?\r\n\r\n"
         L"Vai apagar:\r\n"
         L"• Tarefa de reabertura automática\r\n"
-        L"• Pasta Ambiente de Trabalho\\programas de teste\r\n"
-        L"• macro.json / macro.json.log (Ambiente de Trabalho e pen)\r\n"
-        L"• MacroHelper.exe, stress.ini, uia_stress.ps1\r\n"
+        L"• Pasta helpers\\ (programas de teste, macro, MacroHelper, …)\r\n"
         L"• Estado temporário\r\n"
         L"• SingleUpdate.exe (apagado no próximo reinício)\r\n\r\n"
         L"(Os instaladores NVIDIA/AMD no Ambiente de Trabalho mantêm-se.)\r\n\r\n"
@@ -1069,8 +1068,8 @@ void App::performUninstall() {
     if (summaryLabel_) {
         SetWindowTextW(summaryLabel_,
                        L"A DESINSTALAR…\r\n\r\n"
-                       L"A remover a tarefa agendada, a pasta programas de teste, "
-                       L"a macro, o MacroHelper e os ficheiros na pen.\r\n\r\n"
+                       L"A remover a tarefa agendada e a pasta helpers\\ "
+                       L"(ferramentas, macro, MacroHelper, …).\r\n\r\n"
                        L"Aguarda um momento.");
         ShowWindow(summaryLabel_, SW_SHOW);
     }
@@ -1315,7 +1314,7 @@ void App::openTestTools() {
                     L"Pasta usada (Ambiente de Trabalho):\r\n" +
                     result.baseDir +
                     L"\r\n\r\n" + result.message +
-                    L"\r\n\r\nConfirma que Desktop\\programas de teste existe e tem:\r\n"
+                    L"\r\n\r\nConfirma que helpers\\programas de teste existe e tem:\r\n"
                     L"  FurMark2_x64\\FurMark_GUI.exe\r\n"
                     L"  Prime95\\prime95.exe\r\n"
                     L"  CrystalDiskMark9\\DiskMark64.exe\r\n"
@@ -1339,7 +1338,7 @@ void App::runUiDump() {
 // "Monitor" — OpenHardwareMonitor, plus BatteryCare on laptops. These are not
 // part of the automated bench; they only run when the user asks for them.
 void App::launchMonitorTools() {
-    const std::filesystem::path base = Stress::toolsBaseDir();
+    const std::filesystem::path base = Stress::toolsBaseDir(currentExecutable());
     const auto launch = [this](const std::wstring& label, const std::filesystem::path& tool) {
         std::wstring error;
         if (launchToolProcess(tool, &error)) {
@@ -1400,15 +1399,13 @@ void App::toggleRecording() {
         std::error_code ec;
         if (!std::filesystem::exists(helper, ec)) {
             MessageBoxW(hwnd_,
-                        L"MacroHelper.exe não foi encontrado junto ao SingleUpdate.exe.\r\n"
-                        L"Copia o MacroHelper.exe para a pen (mesma pasta).",
+                        L"MacroHelper.exe não foi encontrado em helpers\\.\r\n"
+                        L"Copia a pasta helpers\\ para o Ambiente de Trabalho "
+                        L"(junto ao SingleUpdate.exe).",
                         L"Win Auto Updater", MB_OK | MB_ICONWARNING);
             return;
         }
-        std::filesystem::path macroFile = Stress::desktopDir() / L"macro.json";
-        if (macroFile.parent_path().empty()) {
-            macroFile = Stress::macroFilePath(exe, config);
-        }
+        const std::filesystem::path macroFile = Stress::macroFilePath(exe, config);
         const std::wstring args = L"--record --macro \"" + macroFile.wstring() + L"\"";
         std::wstring launchError;
         if (!launchDetached(helper, args, &launchError)) {
@@ -2242,11 +2239,8 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SetWindowTextW(summaryLabel_,
                                L"DESINSTALAÇÃO CONCLUÍDA\r\n\r\n"
                                L"• Tarefa de reabertura removida.\r\n"
-                               L"• Pasta programas de teste apagada (Ambiente de Trabalho).\r\n"
-                               L"• macro.json / .log, MacroHelper, stress.ini e "
-                               L"uia_stress.ps1 removidos.\r\n"
-                               L"• O SingleUpdate.exe na pen é apagado no próximo "
-                               L"reinício do PC.\r\n\r\n"
+                               L"• Pasta helpers\\ removida (ferramentas, macro, …).\r\n"
+                               L"• O SingleUpdate.exe é apagado no próximo reinício.\r\n\r\n"
                                L"Clica em Fechar. Reinicia o PC para completar a remoção.");
                 ShowWindow(summaryLabel_, SW_SHOW);
             }

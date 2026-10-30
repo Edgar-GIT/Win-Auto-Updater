@@ -10,6 +10,7 @@
 #include "logger.hpp"
 #include "macro.hpp"
 #include "update.hpp"
+#include "updatepicker.hpp"
 
 #include <windows.h>
 
@@ -18,6 +19,8 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <unordered_set>
+#include <vector>
 
 class App {
 public:
@@ -39,8 +42,10 @@ private:
         WM_APP_UNINSTALL_DONE = WM_APP + 13
     };
 
+    enum class UpdateMode { Full = 0, NoDrivers = 1, DriversOnly = 2 };
+
     static constexpr int kWidth = 860;
-    static constexpr int kHeight = 720;
+    static constexpr int kHeight = 800;
     static constexpr int kButtonHeight = 40;
     static constexpr int kButtonWidth = 170;
     static constexpr int kHeaderHeight = 100;
@@ -65,6 +70,8 @@ private:
     HWND closeButton_ = nullptr;
     HWND updateButton_ = nullptr;
     HWND updateNoDriversButton_ = nullptr;
+    HWND updateDriversOnlyButton_ = nullptr;
+    HWND configureUpdatesButton_ = nullptr;
     HWND runTestsButton_ = nullptr;
     HWND closeReopenButton_ = nullptr;
     HWND dumpButton_ = nullptr;
@@ -122,6 +129,11 @@ private:
     bool cleanupDone_ = false;
     bool choosing_ = true;
     bool updateWithoutDrivers_ = false;
+    UpdateMode updateMode_ = UpdateMode::Full;
+    // Blocked WU titles for "Atualizar tudo". Persisted in helpers\update_filter.txt
+    // so the same filter travels with the USB helpers folder across PCs.
+    std::vector<UpdateChoice> updateChoices_;
+    std::unordered_set<std::wstring> excludedTitles_;
     // Chooser decision: run the stress bench automatically once the update ends.
     bool autoStressAfterUpdate_ = true;
     bool autoStressStarted_ = false;
@@ -142,7 +154,11 @@ private:
     bool createUi();
     void layoutControls();
     void startWorker();
-    void beginUpdate(bool withoutDrivers);
+    void beginUpdate(UpdateMode mode);
+    void configureUpdates();
+    void syncExcludedFromChoices();
+    void saveExcludedTitles() const;
+    void loadExcludedTitles();
     void runPostUpdateTasks();
     void runStressTests();
     void openTestTools();

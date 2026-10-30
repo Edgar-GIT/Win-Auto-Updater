@@ -3,6 +3,8 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
+#include <vector>
 
 #include "com_ptr.hpp"
 
@@ -57,7 +59,12 @@ public:
     void setLogCallback(LogCallback callback);
     void setProgressCallback(ProgressCallback callback);
     void setStatsCallback(StatsCallback callback);
+    // Titles the user turned off in "Configurar atualizações" (session-only).
+    void setExcludedTitles(std::unordered_set<std::wstring> titles);
     Result runCycle();
+
+    // Blocking WU search — call from a worker thread. Returns pending update titles.
+    static std::vector<std::wstring> listPendingTitles(std::wstring* error = nullptr);
 
     struct StepOutcome {
         bool ok = false;
@@ -77,6 +84,7 @@ private:
 
     UpdateStats totals_;
     bool avNoticeShown_ = false;
+    std::unordered_set<std::wstring> excludedTitles_;
 
     void notify(Phase phase, std::wstring_view detail = L"") const;
     void log(std::wstring_view message) const;

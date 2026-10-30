@@ -14,6 +14,7 @@ add_executable(SingleUpdate WIN32
     src/logger.cpp
     src/scheduler.cpp
     src/update.cpp
+    src/updatepicker.cpp
     src/restart.cpp
     src/cleanup.cpp
     src/state.cpp

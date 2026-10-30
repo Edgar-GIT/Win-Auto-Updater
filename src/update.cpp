@@ -17,6 +17,7 @@
 #include <exception>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -870,6 +871,83 @@ void UpdateEngine::setStatsCallback(StatsCallback callback) {
     statsCallback_ = std::move(callback);
 }
 
+void UpdateEngine::setExcludedTitles(std::unordered_set<std::wstring> titles) {
+    excludedTitles_ = std::move(titles);
+}
+
+std::vector<std::wstring> UpdateEngine::listPendingTitles(std::wstring* error) {
+    std::vector<std::wstring> titles;
+    ComInitializer com(COINIT_MULTITHREADED);
+    if (!com.ok()) {
+        if (error) {
+            *error = L"Falha ao inicializar COM.";
+        }
+        return titles;
+    }
+    if (!ensureWindowsUpdateService()) {
+        if (error) {
+            *error = L"O serviço Windows Update não está a correr.";
+        }
+        return titles;
+    }
+
+    ComPtr<IUpdateSession> session;
+    HRESULT hr = CoCreateInstance(CLSID_UpdateSession, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_IUpdateSession, reinterpret_cast<void**>(session.put()));
+    if (FAILED(hr) || !session) {
+        if (error) {
+            *error = L"Não foi possível criar a sessão de atualizações.";
+        }
+        return titles;
+    }
+    session->put_ClientApplicationID(BStr(L"Win Auto Updater"));
+
+    ComPtr<IUpdateSearcher> searcher;
+    hr = session->CreateUpdateSearcher(searcher.put());
+    if (FAILED(hr) || !searcher) {
+        if (error) {
+            *error = L"Não foi possível criar o pesquisador de atualizações.";
+        }
+        return titles;
+    }
+    searcher->put_Online(VARIANT_TRUE);
+    searcher->put_ServerSelection(ssWindowsUpdate);
+    searcher->put_IncludePotentiallySupersededUpdates(VARIANT_FALSE);
+
+    ComPtr<ISearchResult> searchResult;
+    hr = searcher->Search(BStr(kSearchCriteria), searchResult.put());
+    if (FAILED(hr) || !searchResult) {
+        if (error) {
+            *error = L"A pesquisa de atualizações falhou.";
+        }
+        return titles;
+    }
+
+    ComPtr<IUpdateCollection> updates;
+    hr = searchResult->get_Updates(updates.put());
+    if (FAILED(hr) || !updates) {
+        if (error) {
+            *error = L"Não foi possível ler a lista de atualizações.";
+        }
+        return titles;
+    }
+
+    const long count = collectionCount(updates.get());
+    titles.reserve(static_cast<size_t>(count));
+    for (long i = 0; i < count; ++i) {
+        ComPtr<IUpdate> update;
+        if (FAILED(updates->get_Item(i, update.put())) || !update) {
+            continue;
+        }
+        const std::wstring title = updateTitle(update.get());
+        if (isDefenderRelatedUpdate(update.get(), title)) {
+            continue;
+        }
+        titles.push_back(title);
+    }
+    return titles;
+}
+
 void UpdateEngine::refreshFinished() {
     totals_.finished = totals_.installed + totals_.skipped + totals_.failed;
 }
@@ -1122,6 +1200,15 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
             const std::wstring title = updateTitle(update.get());
 
+            if (!excludedTitles_.empty() && excludedTitles_.count(title) > 0) {
+                log(L"Skipped (user config): " + title);
+                ++skipped;
+                totals_.skipped += 1;
+                refreshFinished();
+                notifyStats();
+                continue;
+            }
+
             if (isDefenderRelatedUpdate(update.get(), title)) {
                 // Antivirus definitions are managed by Windows Security. Count
                 // only a single skip and announce it just once.
@@ -1283,6 +1370,15 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         if (avSeen > 0 && failed == 0) {
             notify(Phase::UpToDate, L"This computer is up to date.");
             log(L"Remaining updates are antivirus definitions (skipped).");
+            result.success = true;
+            result.upToDate = true;
+            return result;
+        }
+
+        // Everything left was skipped by the session "Configurar atualizações" filter.
+        if (skipped > 0 && failed == 0 && installed == 0) {
+            notify(Phase::UpToDate, L"This computer is up to date.");
+            log(L"Remaining updates were skipped by the session configuration.");
             result.success = true;
             result.upToDate = true;
             return result;

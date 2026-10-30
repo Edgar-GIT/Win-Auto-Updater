@@ -9,6 +9,8 @@ public:
         std::wstring phase = L"installing";
         int rebootCount = 0;
         bool withoutDrivers = false;
+        // 0 = Full, 1 = NoDrivers, 2 = DriversOnly (matches App::UpdateMode).
+        int updateMode = 0;
     };
 
     StateManager();

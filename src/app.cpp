@@ -25,6 +25,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -148,20 +149,25 @@ bool launchDetached(const std::filesystem::path& exe, const std::wstring& args,
 }
 
 const wchar_t* kChooserHelp =
-    L"ATUALIZAÇÕES WINDOWS\r\n"
-    L"  • Instalar todas as atualizações — Windows + drivers\r\n"
-    L"  • Atualizar sem drivers — só Windows\r\n"
-    L"  • Interruptor abaixo — testes de stress após a atualização\r\n"
+    L"ATUALIZAÇÕES\r\n"
+    L"  • Atualizar tudo — Windows + drivers (respeita o filtro)\r\n"
+    L"  • Sem drivers — só Windows Update\r\n"
+    L"  • Só drivers — copia AMD/NVIDIA (sem Windows Update)\r\n"
+    L"  • Filtro updates — verde = instalar, vermelho = bloquear\r\n"
+    L"  • Interruptor — testes automáticos após atualizar\r\n"
     L"\r\n"
     L"STRESS / MACRO\r\n"
     L"  Deploy: Ambiente de Trabalho\\SingleUpdate.exe + helpers\\\r\n"
     L"  Ferramentas: helpers\\programas de teste\r\n"
-    L"  1. Gravar macro — abre o gravador (Iniciar gravação)\r\n"
-    L"  2. Abrir só as ferramentas — abre as 5 apps (MemTest por cima)\r\n"
-    L"  3. Clica manualmente nas apps enquanto grava\r\n"
-    L"  4. F10 — guarda helpers\\macro.json\r\n"
-    L"  5. Correr testes + macro — testa o replay automaticamente\r\n"
-    L"  • Monitorizar sensores — OpenHardwareMonitor (+ BatteryCare)";
+    L"  1. Gravar macro → Abrir ferramentas → clicar → F10\r\n"
+    L"  2. Testes Automaticos — stress + replay da macro\r\n"
+    L"  • Sensores — OpenHardwareMonitor (+ BatteryCare)\r\n"
+    L"\r\n"
+    L"Filtro: helpers\\update_filter.txt (passa entre PCs com a pasta helpers).";
+
+std::filesystem::path excludedTitlesPath() {
+    return Stress::helpersDir(currentExecutable()) / L"update_filter.txt";
+}
 
 std::wstring* heapCopy(std::wstring_view text) {
     return new std::wstring(text);
@@ -285,10 +291,16 @@ int App::run() {
         if (savedState.phase == L"waiting_reboot") {
             appendLog(L"Reinício detetado — a retomar as atualizações automaticamente.");
             setPhase(L"A retomar após reinício");
-            setCurrent(savedState.withoutDrivers
+            UpdateMode mode = UpdateMode::Full;
+            if (savedState.updateMode == 1 || savedState.withoutDrivers) {
+                mode = UpdateMode::NoDrivers;
+            } else if (savedState.updateMode == 2) {
+                mode = UpdateMode::DriversOnly;
+            }
+            setCurrent(mode == UpdateMode::NoDrivers
                            ? L"A continuar (Windows sem drivers)..."
                            : L"A continuar as atualizações Windows...");
-            beginUpdate(savedState.withoutDrivers);
+            beginUpdate(mode);
         }
     }
 
@@ -517,16 +529,19 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLOSE)), instance_, nullptr);
 
     updateButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Instalar todas as atualizações", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0,
-        0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UPDATE)), instance_, nullptr);
+        0, L"BUTTON", L"Atualizar tudo", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UPDATE)), instance_, nullptr);
 
     updateNoDriversButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Atualizar sem drivers", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UPDATE_NO_DRIVERS)), instance_,
-        nullptr);
+        0, L"BUTTON", L"Sem drivers", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UPDATE_NO_DRIVERS)), instance_, nullptr);
+
+    updateDriversOnlyButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Só drivers", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UPDATE_DRIVERS_ONLY)), instance_, nullptr);
 
     runTestsButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Correr testes + macro", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        0, L"BUTTON", L"Testes Automaticos", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RUN_TESTS)), instance_, nullptr);
 
     closeReopenButton_ = CreateWindowExW(
@@ -540,16 +555,20 @@ bool App::createUi() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RECORD_MACRO)), instance_, nullptr);
 
     monitorButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Monitorizar sensores", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
+        0, L"BUTTON", L"Sensores", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_MONITOR)), instance_, nullptr);
 
     openToolsButton_ = CreateWindowExW(
-        0, L"BUTTON", L"Abrir só as ferramentas", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OPEN_TOOLS)), instance_, nullptr);
+        0, L"BUTTON", L"Abrir ferramentas", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_OPEN_TOOLS)), instance_, nullptr);
 
     stressToggleButton_ = CreateWindowExW(
         0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STRESS_TOGGLE)), instance_, nullptr);
+
+    configureUpdatesButton_ = CreateWindowExW(
+        0, L"BUTTON", L"Filtro updates", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CONFIGURE_UPDATES)), instance_, nullptr);
 
     reopenToggleButton_ = CreateWindowExW(
         0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
@@ -578,6 +597,10 @@ bool App::createUi() {
         SendMessageW(closeButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(updateButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(updateNoDriversButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_),
+                     TRUE);
+        SendMessageW(updateDriversOnlyButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_),
+                     TRUE);
+        SendMessageW(configureUpdatesButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_),
                      TRUE);
         SendMessageW(runTestsButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
         SendMessageW(closeReopenButton_, WM_SETFONT, reinterpret_cast<WPARAM>(buttonFont_), TRUE);
@@ -615,11 +638,13 @@ bool App::createUi() {
         SetWindowTextW(summaryLabel_, kChooserHelp);
         ShowWindow(summaryLabel_, SW_SHOW);
     }
+    loadExcludedTitles();
     appendLog(L"Win Auto Updater iniciado.");
     appendLog(L"Pasta helpers: " + Stress::helpersDir(currentExecutable()).wstring());
     appendLog(L"Ferramentas: helpers\\programas de teste | Macro: helpers\\macro.json");
-    appendLog(L"Macro: Gravar macro → Abrir só as ferramentas → clicar → F10 → "
-              L"Correr testes + macro.");
+    appendLog(L"Filtro updates: helpers\\update_filter.txt (" +
+              std::to_wstring(excludedTitles_.size()) + L" bloqueada(s)).");
+    appendLog(L"Macro: Gravar macro → Abrir ferramentas → clicar → F10 → Testes Automaticos.");
     return true;
 }
 
@@ -659,17 +684,30 @@ void App::layoutControls() {
 
         // Update actions
         if (updateButton_) {
-            MoveWindow(updateButton_, centerX, y, chooseW, 48, TRUE);
+            ShowWindow(updateButton_, SW_SHOW);
+            MoveWindow(updateButton_, centerX, y, chooseW, 44, TRUE);
         }
-        y += 48 + 10;
+        y += 44 + 8;
         if (updateNoDriversButton_) {
-            MoveWindow(updateNoDriversButton_, centerX, y, chooseW, 40, TRUE);
+            ShowWindow(updateNoDriversButton_, SW_SHOW);
+            MoveWindow(updateNoDriversButton_, centerX, y, chooseW, 36, TRUE);
         }
-        y += 40 + 10;
+        y += 36 + 8;
+        if (updateDriversOnlyButton_) {
+            ShowWindow(updateDriversOnlyButton_, SW_SHOW);
+            MoveWindow(updateDriversOnlyButton_, centerX, y, chooseW, 36, TRUE);
+        }
+        y += 36 + 8;
         if (stressToggleButton_) {
-            MoveWindow(stressToggleButton_, centerX, y, chooseW, 36, TRUE);
+            ShowWindow(stressToggleButton_, SW_SHOW);
+            MoveWindow(stressToggleButton_, centerX, y, chooseW, 34, TRUE);
         }
-        y += 36 + 14;
+        y += 34 + 8;
+        if (configureUpdatesButton_) {
+            ShowWindow(configureUpdatesButton_, SW_SHOW);
+            MoveWindow(configureUpdatesButton_, centerX, y, chooseW, 34, TRUE);
+        }
+        y += 34 + 12;
 
         // Stress / macro — two clear rows
         const int halfW = (chooseW - gap) / 2;
@@ -944,39 +982,61 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
     if (stressToggleButton_) {
         ShowWindow(stressToggleButton_, SW_HIDE);
     }
+    if (updateDriversOnlyButton_) {
+        ShowWindow(updateDriversOnlyButton_, SW_HIDE);
+    }
+    if (configureUpdatesButton_) {
+        ShowWindow(configureUpdatesButton_, SW_HIDE);
+    }
+    if (updateNoDriversButton_) {
+        ShowWindow(updateNoDriversButton_, SW_HIDE);
+    }
+    if (updateButton_) {
+        ShowWindow(updateButton_, SW_HIDE);
+    }
 
     setPhase(success ? L"Concluído — este PC está pronto"
                      : L"Interrompido — ocorreu um erro");
 
     std::wstring summary;
-    if (success) {
-        summary = L"Todas as atualizações Windows disponíveis foram instaladas.\r\n\r\n";
+    if (updateMode_ == UpdateMode::DriversOnly && success) {
+        summary =
+            L"Modo só drivers concluído — o Windows Update não foi executado.\r\n"
+            L"Resolução e instaladores gráficos foram preparados no Ambiente de Trabalho.\r\n\r\n";
+        if (!postSummary_.empty()) {
+            summary += L"Configuração:\r\n" + postSummary_ + L"\r\n";
+        }
     } else {
-        summary = detail.empty() ? L"Ocorreu um erro durante o processo de atualização." : detail;
-        summary += L"\r\n\r\n";
-    }
+        if (success) {
+            summary = L"Todas as atualizações Windows disponíveis foram instaladas.\r\n\r\n";
+        } else {
+            summary =
+                detail.empty() ? L"Ocorreu um erro durante o processo de atualização." : detail;
+            summary += L"\r\n\r\n";
+        }
 
-    summary += L"Encontradas: " + std::to_wstring(uiStats_.found) + L"     Transferidas: " +
-               std::to_wstring(uiStats_.downloaded) + L"     Instaladas: " +
-               std::to_wstring(uiStats_.installed) + L"\r\n";
-    summary += L"Concluídas: " + std::to_wstring(uiStats_.finished) + L"     Ignoradas: " +
-               std::to_wstring(uiStats_.skipped) + L"     Falhadas: " +
-               std::to_wstring(uiStats_.failed) + L"\r\n\r\n";
+        summary += L"Encontradas: " + std::to_wstring(uiStats_.found) + L"     Transferidas: " +
+                   std::to_wstring(uiStats_.downloaded) + L"     Instaladas: " +
+                   std::to_wstring(uiStats_.installed) + L"\r\n";
+        summary += L"Concluídas: " + std::to_wstring(uiStats_.finished) + L"     Ignoradas: " +
+                   std::to_wstring(uiStats_.skipped) + L"     Falhadas: " +
+                   std::to_wstring(uiStats_.failed) + L"\r\n\r\n";
 
-    if (uiStats_.skipped > 0) {
-        summary +=
-            L"A atualização do antivírus é ignorada de propósito — atualiza as definições do "
-            L"Microsoft Defender manualmente em Segurança do Windows.\r\n\r\n";
-    }
+        if (uiStats_.skipped > 0) {
+            summary +=
+                L"A atualização do antivírus é ignorada de propósito — atualiza as definições do "
+                L"Microsoft Defender manualmente em Segurança do Windows.\r\n\r\n";
+        }
 
-    if (!postSummary_.empty()) {
-        summary += L"Configuração pós-atualização:\r\n" + postSummary_ + L"\r\n";
-    }
+        if (!postSummary_.empty()) {
+            summary += L"Configuração pós-atualização:\r\n" + postSummary_ + L"\r\n";
+        }
 
-    if (updateWithoutDrivers_) {
-        summary +=
-            L"O Windows Update foi configurado para não instalar drivers de hardware nesta "
-            L"execução.\r\n\r\n";
+        if (updateWithoutDrivers_) {
+            summary +=
+                L"O Windows Update foi configurado para não instalar drivers de hardware nesta "
+                L"execução.\r\n\r\n";
+        }
     }
 
     if (success) {
@@ -1127,18 +1187,137 @@ void App::startWorker() {
     });
 }
 
-void App::beginUpdate(bool withoutDrivers) {
+void App::syncExcludedFromChoices() {
+    // Merge only titles shown in the dialog — keep blocks for updates not present on this PC.
+    for (const auto& choice : updateChoices_) {
+        if (choice.enabled) {
+            excludedTitles_.erase(choice.title);
+        } else {
+            excludedTitles_.insert(choice.title);
+        }
+    }
+}
+
+void App::saveExcludedTitles() const {
+    const auto path = excludedTitlesPath();
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::wofstream file(path);
+    if (!file.is_open()) {
+        return;
+    }
+    for (const auto& title : excludedTitles_) {
+        file << title << L'\n';
+    }
+}
+
+void App::loadExcludedTitles() {
+    excludedTitles_.clear();
+    const auto path = excludedTitlesPath();
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        return;
+    }
+    std::wifstream file(path);
+    if (!file.is_open()) {
+        return;
+    }
+    std::wstring line;
+    while (std::getline(file, line)) {
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n')) {
+            line.pop_back();
+        }
+        if (!line.empty()) {
+            excludedTitles_.insert(line);
+        }
+    }
+}
+
+void App::configureUpdates() {
+    if (!choosing_) {
+        return;
+    }
+
+    loadExcludedTitles();
+
+    setCurrent(L"A pesquisar atualizações pendentes no Windows Update...");
+    HCURSOR prev = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    EnableWindow(configureUpdatesButton_, FALSE);
+    EnableWindow(updateButton_, FALSE);
+    EnableWindow(updateNoDriversButton_, FALSE);
+    EnableWindow(updateDriversOnlyButton_, FALSE);
+
+    std::wstring error;
+    const auto titles = UpdateEngine::listPendingTitles(&error);
+
+    SetCursor(prev);
+    EnableWindow(configureUpdatesButton_, TRUE);
+    EnableWindow(updateButton_, TRUE);
+    EnableWindow(updateNoDriversButton_, TRUE);
+    EnableWindow(updateDriversOnlyButton_, TRUE);
+
+    if (titles.empty()) {
+        const std::wstring msg =
+            error.empty() ? L"Não há atualizações pendentes neste momento."
+                          : (L"Não foi possível listar as atualizações:\r\n" + error);
+        MessageBoxW(hwnd_, msg.c_str(), L"Filtro updates", MB_OK | MB_ICONINFORMATION);
+        setCurrent(L"Escolhe o modo de atualização, ou usa os botões de stress/macro. Vê o guia.");
+        return;
+    }
+
+    std::vector<UpdateChoice> next;
+    next.reserve(titles.size());
+    for (const auto& title : titles) {
+        const bool enabled = excludedTitles_.count(title) == 0;
+        next.push_back(UpdateChoice{title, enabled});
+    }
+
+    if (!showUpdatePickerDialog(hwnd_, instance_, uiFont_ ? uiFont_ : buttonFont_, &next)) {
+        setCurrent(L"Escolhe o modo de atualização, ou usa os botões de stress/macro. Vê o guia.");
+        return;
+    }
+
+    updateChoices_ = std::move(next);
+    syncExcludedFromChoices();
+    saveExcludedTitles();
+
+    size_t blockedHere = 0;
+    for (const auto& c : updateChoices_) {
+        if (!c.enabled) {
+            ++blockedHere;
+        }
+    }
+    setCurrent(L"Filtro guardado em helpers\\update_filter.txt — " +
+               std::to_wstring(updateChoices_.size() - blockedHere) + L" a instalar, " +
+               std::to_wstring(blockedHere) + L" bloqueada(s) neste PC (" +
+               std::to_wstring(excludedTitles_.size()) + L" no ficheiro).");
+    appendLog(L"Filtro updates guardado: " + std::to_wstring(excludedTitles_.size()) +
+              L" título(s) bloqueado(s) em helpers\\update_filter.txt.");
+}
+
+void App::beginUpdate(UpdateMode mode) {
     if (!choosing_) {
         return;
     }
     choosing_ = false;
-    updateWithoutDrivers_ = withoutDrivers;
+    updateMode_ = mode;
+    updateWithoutDrivers_ = (mode == UpdateMode::NoDrivers);
+
+    if (mode == UpdateMode::Full) {
+        loadExcludedTitles();
+    }
 
     if (updateButton_) {
         ShowWindow(updateButton_, SW_HIDE);
     }
     if (updateNoDriversButton_) {
         ShowWindow(updateNoDriversButton_, SW_HIDE);
+    }
+    if (updateDriversOnlyButton_) {
+        ShowWindow(updateDriversOnlyButton_, SW_HIDE);
+    }
+    if (configureUpdatesButton_) {
+        ShowWindow(configureUpdatesButton_, SW_HIDE);
     }
     if (stressToggleButton_) {
         ShowWindow(stressToggleButton_, SW_HIDE);
@@ -1172,8 +1351,13 @@ void App::beginUpdate(bool withoutDrivers) {
     EnableWindow(closeButton_, FALSE);
     EnableWindow(uninstallButton_, FALSE);
 
-    setPhase(L"A iniciar");
-    setCurrent(L"A preparar o Win Auto Updater...");
+    if (mode == UpdateMode::DriversOnly) {
+        setPhase(L"A preparar drivers");
+        setCurrent(L"A copiar o instalador gráfico (sem Windows Update)...");
+    } else {
+        setPhase(L"A iniciar");
+        setCurrent(L"A preparar o Win Auto Updater...");
+    }
     layoutControls();
     InvalidateRect(hwnd_, nullptr, TRUE);
 
@@ -1494,9 +1678,25 @@ void App::closeAndReopen() {
 }
 
 void App::worker() {
+    logger_.log(L"Worker do Win Auto Updater iniciado.");
+
+    if (updateMode_ == UpdateMode::DriversOnly) {
+        logger_.status(L"Modo só drivers — a saltar o Windows Update.");
+        postText(hwnd_, WM_APP_CURRENT, L"A preparar resolução e instaladores gráficos...");
+        logger_.log(L"Modo: atualizar só drivers (sem Windows Update).");
+        runPostUpdateTasks();
+        cleanupDone_ = true;
+        {
+            StateManager stateManager;
+            stateManager.remove();
+        }
+        logSummary(L"Success (drivers only)");
+        PostMessageW(hwnd_, WM_APP_DONE, 0, 0);
+        return;
+    }
+
     logger_.status(L"A verificar a ligação à Internet...");
     postText(hwnd_, WM_APP_CURRENT, L"À espera de ligação de rede...");
-    logger_.log(L"Worker do Win Auto Updater iniciado.");
 
     if (updateWithoutDrivers_) {
         std::wstring policyDetail;
@@ -1508,6 +1708,10 @@ void App::worker() {
         }
     } else {
         logger_.log(L"Os drivers de hardware podem ser atualizados pelo Windows Update.");
+        if (!excludedTitles_.empty()) {
+            logger_.log(L"Filtro updates: " + std::to_wstring(excludedTitles_.size()) +
+                        L" atualização(ões) bloqueada(s) em helpers\\update_filter.txt.");
+        }
     }
 
     for (int attempt = 0; attempt < 30 && running_; ++attempt) {
@@ -1623,6 +1827,10 @@ void App::worker() {
         }
     });
 
+    if (updateMode_ == UpdateMode::Full && !excludedTitles_.empty()) {
+        engine.setExcludedTitles(excludedTitles_);
+    }
+
     int consecutiveFailures = 0;
     constexpr int kMaxConsecutiveFailures = 3;
 
@@ -1682,7 +1890,11 @@ void App::worker() {
             state.phase = L"waiting_reboot";
             state.rebootCount = newRebootCount;
             state.withoutDrivers = updateWithoutDrivers_;
+            state.updateMode = static_cast<int>(updateMode_);
             stateManager.save(state);
+            if (updateMode_ == UpdateMode::Full) {
+                saveExcludedTitles();
+            }
 
             {
                 Scheduler scheduler(exe);
@@ -2065,7 +2277,13 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_COMMAND: {
             switch (LOWORD(wParam)) {
                 case IDC_UPDATE:
-                    beginUpdate(false);
+                    beginUpdate(UpdateMode::Full);
+                    return 0;
+                case IDC_UPDATE_DRIVERS_ONLY:
+                    beginUpdate(UpdateMode::DriversOnly);
+                    return 0;
+                case IDC_CONFIGURE_UPDATES:
+                    configureUpdates();
                     return 0;
                 case IDC_STRESS_TOGGLE:
                     if (choosing_) {
@@ -2096,7 +2314,7 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                     return 0;
                 case IDC_UPDATE_NO_DRIVERS:
-                    beginUpdate(true);
+                    beginUpdate(UpdateMode::NoDrivers);
                     return 0;
                 case IDC_UNINSTALL:
                     // Disponível no ecrã inicial e no ecrã final.
@@ -2213,6 +2431,12 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (updateNoDriversButton_) {
                 ShowWindow(updateNoDriversButton_, SW_HIDE);
+            }
+            if (updateDriversOnlyButton_) {
+                ShowWindow(updateDriversOnlyButton_, SW_HIDE);
+            }
+            if (configureUpdatesButton_) {
+                ShowWindow(configureUpdatesButton_, SW_HIDE);
             }
             if (stressToggleButton_) {
                 ShowWindow(stressToggleButton_, SW_HIDE);

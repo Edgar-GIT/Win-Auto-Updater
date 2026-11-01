@@ -1375,10 +1375,10 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             return result;
         }
 
-        // Everything left was skipped by the session "Configurar atualizações" filter.
+        // Everything left was blocked by helpers\update_filter.txt.
         if (skipped > 0 && failed == 0 && installed == 0) {
             notify(Phase::UpToDate, L"This computer is up to date.");
-            log(L"Remaining updates were skipped by the session configuration.");
+            log(L"Remaining updates were blocked by the update filter.");
             result.success = true;
             result.upToDate = true;
             return result;

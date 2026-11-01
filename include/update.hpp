@@ -59,7 +59,7 @@ public:
     void setLogCallback(LogCallback callback);
     void setProgressCallback(ProgressCallback callback);
     void setStatsCallback(StatsCallback callback);
-    // Titles the user turned off in "Configurar atualizações" (session-only).
+    // Titles blocked via helpers\update_filter.txt ("Filtro updates").
     void setExcludedTitles(std::unordered_set<std::wstring> titles);
     Result runCycle();
 

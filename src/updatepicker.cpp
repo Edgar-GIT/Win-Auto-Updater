@@ -106,8 +106,8 @@ LRESULT CALLBACK pickerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         case WM_CREATE: {
             auto* state = stateOf(hwnd);
             CreateWindowExW(0, L"STATIC",
-                            L"Verde = instalar nesta sessão. Vermelho = saltar.\r\n"
-                            L"Esta lista reinicia sempre que abres a aplicação.",
+                            L"Verde = instalar. Vermelho = bloquear.\r\n"
+                            L"Guardado em helpers\\update_filter.txt (passa entre PCs).",
                             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdHint)), nullptr,
                             nullptr);
@@ -284,7 +284,7 @@ bool showUpdatePickerDialog(HWND parent, HINSTANCE instance, HFONT font,
     const int screenH = GetSystemMetrics(SM_CYSCREEN);
     HWND dlg =
         CreateWindowExW(WS_EX_DLGMODALFRAME, L"WinAutoUpdaterUpdatePicker",
-                        L"Configurar atualizações", WS_CAPTION | WS_SYSMENU | WS_SIZEBOX | WS_VISIBLE,
+                        L"Filtro updates", WS_CAPTION | WS_SYSMENU | WS_SIZEBOX | WS_VISIBLE,
                         (screenW - kDlgW) / 2, (screenH - kDlgH) / 2, kDlgW, kDlgH, parent, nullptr,
                         instance, &state);
     if (!dlg) {

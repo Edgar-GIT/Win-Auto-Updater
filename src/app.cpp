@@ -754,7 +754,7 @@ void App::layoutControls() {
 
     if (uiDoneMode_) {
         // Ecrã final:
-        //   [Abrir ferramentas] [Correr testes + macro] [Sensores]
+        //   [Abrir ferramentas] [Testes Automaticos] [Sensores]
         //   [Reabrir após reinício]
         //   [Desinstalar] [Fechar]
         const int actionH = 44;
@@ -1054,7 +1054,7 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         if (success) {
             ShowWindow(runTestsButton_, SW_SHOW);
             EnableWindow(runTestsButton_, TRUE);
-            SetWindowTextW(runTestsButton_, L"Correr testes + macro");
+            SetWindowTextW(runTestsButton_, L"Testes Automaticos");
         } else {
             ShowWindow(runTestsButton_, SW_HIDE);
         }
@@ -1063,7 +1063,7 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         if (success) {
             ShowWindow(openToolsButton_, SW_SHOW);
             EnableWindow(openToolsButton_, TRUE);
-            SetWindowTextW(openToolsButton_, L"Abrir só as ferramentas");
+            SetWindowTextW(openToolsButton_, L"Abrir ferramentas");
         } else {
             ShowWindow(openToolsButton_, SW_HIDE);
         }
@@ -1072,7 +1072,7 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
         if (success) {
             ShowWindow(monitorButton_, SW_SHOW);
             EnableWindow(monitorButton_, TRUE);
-            SetWindowTextW(monitorButton_, L"Monitorizar sensores");
+            SetWindowTextW(monitorButton_, L"Sensores");
         } else {
             ShowWindow(monitorButton_, SW_HIDE);
         }
@@ -1504,7 +1504,7 @@ void App::openTestTools() {
                     L"  CrystalDiskMark9\\DiskMark64.exe\r\n"
                     L"  powerMAX\\powerMAX.exe  (ou powerMAX_x64.exe)\r\n"
                     L"  memtest.exe";
-                MessageBoxW(hwnd_, alert.c_str(), L"Abrir só as ferramentas", MB_OK | MB_ICONWARNING);
+                MessageBoxW(hwnd_, alert.c_str(), L"Abrir ferramentas", MB_OK | MB_ICONWARNING);
             }
         } catch (const std::exception& ex) {
             const std::string what = ex.what();
@@ -1541,8 +1541,8 @@ void App::launchMonitorTools() {
 void App::updateStressToggleText() {
     if (stressToggleButton_) {
         SetWindowTextW(stressToggleButton_,
-                       autoStressAfterUpdate_ ? L"Após atualizar: correr testes de stress"
-                                              : L"Após atualizar: parar");
+                       autoStressAfterUpdate_ ? L"Após update: testes automáticos"
+                                              : L"Após update: sem testes");
     }
 }
 
@@ -1600,7 +1600,7 @@ void App::toggleRecording() {
                         L"Win Auto Updater", MB_OK | MB_ICONERROR);
             return;
         }
-        applyHint(L"MacroHelper: Iniciar gravação → Abrir só as ferramentas → clicar → F10. "
+        applyHint(L"MacroHelper: Iniciar gravação → Abrir ferramentas → clicar → F10. "
                   L"Guarda: " +
                   macroFile.wstring());
         appendLog(L"MacroHelper iniciado para gravação → " + macroFile.wstring());
@@ -1656,7 +1656,7 @@ void App::finishRecording() {
     }
 
     applyHint(L"Macro guardada: " + file.wstring() + L" (" + std::to_wstring(events.size()) +
-              L" passos). \"Correr testes + macro\" vai reproduzi-la.");
+              L" passos). \"Testes Automaticos\" vai reproduzi-la.");
     ShellExecuteW(nullptr, L"open", file.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -2408,11 +2408,11 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     stressRunning_ = false;
                     if (runTestsButton_) {
                         EnableWindow(runTestsButton_, TRUE);
-                        SetWindowTextW(runTestsButton_, L"Correr testes + macro");
+                        SetWindowTextW(runTestsButton_, L"Testes Automaticos");
                     }
                     if (openToolsButton_) {
                         EnableWindow(openToolsButton_, TRUE);
-                        SetWindowTextW(openToolsButton_, L"Abrir só as ferramentas");
+                        SetWindowTextW(openToolsButton_, L"Abrir ferramentas");
                     }
                 }
                 delete msg;

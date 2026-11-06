@@ -1385,6 +1385,15 @@ void App::runPostUpdateTasks() {
             driver.detected ? driver.vendorName : std::wstring(L"não detetado");
         postSummary_ += L"Gráficos (" + label + L"): " + driver.message + L"\r\n";
     }
+
+    if (Drivers::isLenovoMachine()) {
+        logger_.status(L"Lenovo/ThinkPad detetado...");
+        postText(hwnd_, WM_APP_CURRENT,
+                 L"A copiar o Lenovo System Update para o Ambiente de Trabalho...");
+        const Drivers::Result lenovo = Drivers::copyLenovoSystemUpdate();
+        logger_.log(L"Lenovo: " + lenovo.message);
+        postSummary_ += L"Lenovo: " + lenovo.message + L"\r\n";
+    }
 }
 
 void App::runStressTests() {

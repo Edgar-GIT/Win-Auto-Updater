@@ -4,7 +4,8 @@
 
 // Detects the installed graphics adapter and copies the matching driver
 // installer from helpers\programas de teste onto the Desktop
-// (nvidia_app.exe / amd_drivers.exe).
+// (nvidia_app.exe / amd_drivers.exe). Lenovo/ThinkPad PCs also get
+// system_update_*.exe copied the same way.
 namespace Drivers {
 
 enum class Vendor {
@@ -28,5 +29,10 @@ struct Result {
 Vendor detectVendor();
 std::wstring vendorName(Vendor vendor);
 Result downloadForSystem();
+
+// True when SystemManufacturer / product name looks like Lenovo or ThinkPad.
+bool isLenovoMachine();
+// Copies system_update_5.08.03.59.exe to the Desktop when this is a Lenovo PC.
+Result copyLenovoSystemUpdate();
 
 }  // namespace Drivers

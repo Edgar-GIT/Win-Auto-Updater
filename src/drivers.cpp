@@ -11,6 +11,8 @@
 
 namespace {
 
+constexpr const wchar_t* kLenovoSystemUpdate = L"system_update_5.08.03.59.exe";
+
 std::filesystem::path desktopPath() {
     PWSTR raw = nullptr;
     std::filesystem::path result;
@@ -51,6 +53,69 @@ const wchar_t* bundledInstallerName(Drivers::Vendor vendor) {
         return L"amd_drivers.exe";
     }
     return nullptr;
+}
+
+std::wstring toUpper(std::wstring text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(std::towupper(c)); });
+    return text;
+}
+
+std::wstring readRegString(HKEY root, const wchar_t* subKey, const wchar_t* valueName) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(root, subKey, 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) {
+        return {};
+    }
+    wchar_t buffer[512]{};
+    DWORD type = 0;
+    DWORD size = sizeof(buffer);
+    const LONG rc = RegQueryValueExW(key, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(buffer),
+                                     &size);
+    RegCloseKey(key);
+    if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+        return {};
+    }
+    return buffer;
+}
+
+Result copyBundledFileToDesktop(const wchar_t* fileName, const std::wstring& label) {
+    Result result;
+    result.vendorName = label;
+
+    const std::filesystem::path desktop = desktopPath();
+    if (desktop.empty()) {
+        result.message = L"Não foi possível localizar a pasta Ambiente de Trabalho.";
+        return result;
+    }
+
+    const std::filesystem::path tools = toolsDir();
+    const std::filesystem::path source = tools / fileName;
+    const std::filesystem::path target = desktop / fileName;
+
+    std::error_code ec;
+    if (tools.empty() || !std::filesystem::is_directory(tools, ec)) {
+        result.message =
+            L"Pasta helpers\\programas de teste não encontrada "
+            L"(precisa de " +
+            std::wstring(fileName) + L").";
+        return result;
+    }
+    if (!std::filesystem::is_regular_file(source, ec)) {
+        result.message = L"Ficheiro em falta: " + source.wstring();
+        return result;
+    }
+
+    if (!CopyFileW(source.wstring().c_str(), target.wstring().c_str(), FALSE)) {
+        result.message = L"Falha ao copiar " + std::wstring(fileName) +
+                         L" para o Ambiente de Trabalho (erro " +
+                         std::to_wstring(GetLastError()) + L").";
+        return result;
+    }
+
+    result.downloaded = true;
+    result.savedPath = target.wstring();
+    result.message = label + L" — " + fileName + L" copiado para o Ambiente de Trabalho.";
+    return result;
 }
 
 }  // namespace
@@ -116,6 +181,39 @@ std::wstring vendorName(Vendor vendor) {
     return L"nenhum";
 }
 
+bool isLenovoMachine() {
+    const std::wstring manufacturer = toUpper(readRegString(
+        HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemManufacturer"));
+    const std::wstring product = toUpper(readRegString(
+        HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemProductName"));
+    const std::wstring family = toUpper(
+        readRegString(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemFamily"));
+    const std::wstring alt = toUpper(readRegString(
+        HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SystemInformation",
+        L"SystemManufacturer"));
+
+    const auto has = [](const std::wstring& hay, const wchar_t* needle) {
+        return !hay.empty() && hay.find(needle) != std::wstring::npos;
+    };
+
+    return has(manufacturer, L"LENOVO") || has(alt, L"LENOVO") || has(product, L"THINKPAD") ||
+           has(family, L"THINKPAD") || has(product, L"LENOVO") || has(family, L"LENOVO");
+}
+
+Result copyLenovoSystemUpdate() {
+    Result result;
+    result.vendorName = L"Lenovo";
+    if (!isLenovoMachine()) {
+        result.message = L"PC não é Lenovo/ThinkPad — System Update não copiado.";
+        return result;
+    }
+    result.detected = true;
+    result = copyBundledFileToDesktop(kLenovoSystemUpdate, L"Lenovo");
+    result.detected = true;
+    result.vendorName = L"Lenovo";
+    return result;
+}
+
 Result downloadForSystem() {
     Result result;
     result.vendor = detectVendor();
@@ -132,47 +230,17 @@ Result downloadForSystem() {
         return result;
     }
 
-    const std::filesystem::path desktop = desktopPath();
-    if (desktop.empty()) {
-        result.message = L"Não foi possível localizar a pasta Ambiente de Trabalho.";
-        return result;
-    }
-
     const wchar_t* fileName = bundledInstallerName(result.vendor);
     if (!fileName) {
         result.message = L"Fornecedor de gráficos não suportado.";
         return result;
     }
 
-    const std::filesystem::path tools = toolsDir();
-    const std::filesystem::path source = tools / fileName;
-    const std::filesystem::path target = desktop / fileName;
-
-    std::error_code ec;
-    if (tools.empty() || !std::filesystem::is_directory(tools, ec)) {
-        result.message =
-            L"Pasta helpers\\programas de teste não encontrada "
-            L"(precisa de " +
-            std::wstring(fileName) + L").";
-        return result;
-    }
-    if (!std::filesystem::is_regular_file(source, ec)) {
-        result.message = L"Ficheiro em falta: " + source.wstring();
-        return result;
-    }
-
-    if (!CopyFileW(source.wstring().c_str(), target.wstring().c_str(), FALSE)) {
-        result.message = L"Falha ao copiar " + std::wstring(fileName) +
-                         L" para o Ambiente de Trabalho (erro " +
-                         std::to_wstring(GetLastError()) + L").";
-        return result;
-    }
-
-    result.downloaded = true;
-    result.savedPath = target.wstring();
-    result.message = result.vendorName + L" — " + fileName +
-                     L" copiado para o Ambiente de Trabalho.";
-    return result;
+    Result copied = copyBundledFileToDesktop(fileName, result.vendorName);
+    copied.vendor = result.vendor;
+    copied.vendorName = result.vendorName;
+    copied.detected = true;
+    return copied;
 }
 
 }  // namespace Drivers

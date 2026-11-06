@@ -283,6 +283,7 @@ def play_document(
     *,
     window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
     pad_ms: int = DEFAULT_PAD_MS,
+    gap_scale: float = 1.0,
     on_fail: str = "continue",
     log: LogFn | None = None,
 ) -> ReplayReport:
@@ -292,22 +293,25 @@ def play_document(
         _log(log, "No steps in macro - nothing to replay.")
         return report
 
+    scale = max(0.2, float(gap_scale))
     _log(
         log,
-        f"Replaying {report.total} step(s): recorded timing + {pad_ms}ms pad each, "
+        f"Replaying {report.total} step(s): recorded×{scale:.2f} + pad {pad_ms}ms each, "
         f"window timeout={window_timeout_s:.0f}s, on-fail={on_fail}",
     )
     for i, step in enumerate(doc.steps, start=1):
-        # Pace exactly like the recording, then add lag margin for slower PCs.
-        # Optional dialogs (MemTest OOM): keep recorded wait short — often absent.
-        wait_ms = max(0, int(step.dt_ms)) + max(0, int(pad_ms))
+        # Scale recorded gaps for PC speed, then add a small settle pad.
+        # Optional dialogs (MemTest OOM): keep wait short — often absent.
+        scaled = int(max(0, int(step.dt_ms)) * scale)
+        wait_ms = scaled + max(0, int(pad_ms))
         if is_optional_dialog(step):
             wait_ms = min(wait_ms, 2500)
         if wait_ms > 0:
             _log(
                 log,
                 f"  wait {wait_ms / 1000.0:.1f}s "
-                f"(recorded {step.dt_ms}ms + pad {pad_ms}ms) before step {i}",
+                f"(recorded {step.dt_ms}ms ×{scale:.2f} = {scaled}ms + pad {pad_ms}ms) "
+                f"before step {i}",
             )
             time.sleep(wait_ms / 1000.0)
 
@@ -341,6 +345,7 @@ def play_file(
     *,
     window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
     pad_ms: int = DEFAULT_PAD_MS,
+    gap_scale: float = 1.0,
     on_fail: str = "continue",
     log: LogFn | None = None,
 ) -> ReplayReport:
@@ -361,6 +366,7 @@ def play_file(
         doc,
         window_timeout_s=window_timeout_s,
         pad_ms=pad_ms,
+        gap_scale=gap_scale,
         on_fail=on_fail,
         log=log,
     )

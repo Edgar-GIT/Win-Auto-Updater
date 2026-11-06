@@ -183,8 +183,11 @@ def main(argv: list[str] | None = None) -> int:
         else timing.pad_ms
     )
     timeout_s = float(args.timeout) if args.timeout is not None else timing.timeout_s
+    gap_scale = timing.gap_scale
     if args.pad_seconds is not None or args.timeout is not None:
-        override = f"Overrides: pad={pad_ms}ms timeout={timeout_s:.1f}s"
+        # Manual overrides: keep recorded gaps at 1.0× (user is tuning pad/timeout).
+        gap_scale = 1.0
+        override = f"Overrides: pad={pad_ms}ms timeout={timeout_s:.1f}s gap_scale=1.00"
         _tee(override)
         print(override, flush=True)
 
@@ -192,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         path,
         window_timeout_s=timeout_s,
         pad_ms=pad_ms,
+        gap_scale=gap_scale,
         on_fail=args.on_fail,
         log=_tee,
     )

@@ -66,6 +66,11 @@ public:
     // Blocking WU search — call from a worker thread. Returns pending update titles.
     static std::vector<std::wstring> listPendingTitles(std::wstring* error = nullptr);
 
+    // Strip KB ids / dates so "Cumulative Update … (KB504…)" still matches next month's KB.
+    static std::wstring normalizeTitle(std::wstring_view title);
+    static bool isTitleBlocked(std::wstring_view title,
+                               const std::unordered_set<std::wstring>& blocked);
+
     struct StepOutcome {
         bool ok = false;
         bool rebootRequired = false;
@@ -85,6 +90,7 @@ private:
     UpdateStats totals_;
     bool avNoticeShown_ = false;
     std::unordered_set<std::wstring> excludedTitles_;
+    std::unordered_set<std::wstring> excludedNormalized_;
 
     void notify(Phase phase, std::wstring_view detail = L"") const;
     void log(std::wstring_view message) const;

@@ -97,7 +97,7 @@ void Cleanup::removeBundle(const std::filesystem::path& executable) {
         deleteIfExists(desktop / L"programas de teste");
         deleteIfExists(desktop / L"macro.json");
         deleteIfExists(desktop / L"macro.json.log");
-        // nvidia_app.exe / amd_drivers.exe on the Desktop are kept on purpose.
+        // nvidia_app.exe / amd_drivers.exe / system_update_*.exe on the Desktop are kept.
     }
     if (!executable.empty()) {
         const auto dir = executable.parent_path();

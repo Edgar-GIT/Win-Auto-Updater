@@ -78,8 +78,8 @@ std::wstring readRegString(HKEY root, const wchar_t* subKey, const wchar_t* valu
     return buffer;
 }
 
-Result copyBundledFileToDesktop(const wchar_t* fileName, const std::wstring& label) {
-    Result result;
+Drivers::Result copyBundledFileToDesktop(const wchar_t* fileName, const std::wstring& label) {
+    Drivers::Result result;
     result.vendorName = label;
 
     const std::filesystem::path desktop = desktopPath();

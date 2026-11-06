@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cwctype>
 #include <fstream>
 #include <functional>
 #include <initializer_list>
@@ -604,6 +605,73 @@ void focusProcessWindows(const std::wstring& processName) {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 }
 
+// After the macro starts powerMAX's GPU stress, try to raise that test window.
+// Fail-soft: missing window / focus denial is ignored.
+void focusPowerMaxGpuWindow() {
+    struct Ctx {
+        HWND gpu = nullptr;
+        HWND any = nullptr;
+    } ctx;
+
+    EnumWindows(
+        [](HWND window, LPARAM param) -> BOOL {
+            auto* c = reinterpret_cast<Ctx*>(param);
+            if (IsWindowVisible(window) == 0) {
+                return TRUE;
+            }
+            DWORD pid = 0;
+            GetWindowThreadProcessId(window, &pid);
+            if (pid == 0) {
+                return TRUE;
+            }
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (process == nullptr) {
+                return TRUE;
+            }
+            wchar_t buffer[MAX_PATH]{};
+            DWORD size = MAX_PATH;
+            std::wstring name;
+            if (QueryFullProcessImageNameW(process, 0, buffer, &size) != 0) {
+                name = std::filesystem::path(buffer).filename().wstring();
+            }
+            CloseHandle(process);
+
+            const bool isPowerMax =
+                _wcsicmp(name.c_str(), L"powerMAX.exe") == 0 ||
+                _wcsicmp(name.c_str(), L"powerMAX_x64.exe") == 0 ||
+                _wcsicmp(name.c_str(), L"powerMAX_x32.exe") == 0;
+            if (!isPowerMax) {
+                return TRUE;
+            }
+
+            wchar_t title[256]{};
+            GetWindowTextW(window, title, 256);
+            std::wstring upper = title;
+            std::transform(upper.begin(), upper.end(), upper.begin(),
+                           [](wchar_t ch) { return static_cast<wchar_t>(std::towupper(ch)); });
+
+            c->any = window;
+            if (upper.find(L"GPU") != std::wstring::npos ||
+                upper.find(L"TEST") != std::wstring::npos ||
+                upper.find(L"OPENGL") != std::wstring::npos ||
+                upper.find(L"DIRECT") != std::wstring::npos ||
+                upper.find(L"STRESS") != std::wstring::npos) {
+                c->gpu = window;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+
+    HWND target = ctx.gpu ? ctx.gpu : ctx.any;
+    if (target == nullptr) {
+        return;
+    }
+    ShowWindow(target, SW_RESTORE);
+    BringWindowToTop(target);
+    SetForegroundWindow(target);
+    SetWindowPos(target, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+}
+
 }  // namespace
 
 Result launchTools(const Config& /*config*/, const Callbacks& callbacks) {
@@ -767,6 +835,7 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
                     log(L"Macro replay finished with errors (exit " + std::to_wstring(exitCode) +
                         L").");
                 }
+                focusPowerMaxGpuWindow();
             }
         }
     } else {
@@ -779,6 +848,7 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
                 macroFile.wstring());
             Macro::play(macro, log);
             log(L"Macro replay finished.");
+            focusPowerMaxGpuWindow();
         } else {
             log(L"No macro recorded yet. The tools are open — click \"Record macro\" in the "
                 L"app, do your clicks, then press F10.");

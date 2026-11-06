@@ -153,6 +153,7 @@ const wchar_t* kChooserHelp =
     L"  • Atualizar tudo — Windows + drivers (respeita o filtro)\r\n"
     L"  • Sem drivers — só Windows Update\r\n"
     L"  • Só drivers — copia AMD/NVIDIA (sem Windows Update)\r\n"
+    L"  • Lenovo/ThinkPad — copia também o System Update para o Ambiente de Trabalho\r\n"
     L"  • Filtro updates — verde = instalar, vermelho = bloquear\r\n"
     L"  • Interruptor — testes automáticos após atualizar\r\n"
     L"\r\n"
@@ -1188,11 +1189,32 @@ void App::startWorker() {
 }
 
 void App::syncExcludedFromChoices() {
-    // Merge only titles shown in the dialog — keep blocks for updates not present on this PC.
+    // Merge titles shown in the dialog. Keep blocks for updates not present on this PC.
+    // When enabling/disabling, also drop older aliases that normalize to the same family
+    // (so KB504… → KB505… replaces the old line instead of stacking forever).
     for (const auto& choice : updateChoices_) {
+        const std::wstring norm = UpdateEngine::normalizeTitle(choice.title);
         if (choice.enabled) {
             excludedTitles_.erase(choice.title);
+            if (!norm.empty()) {
+                for (auto it = excludedTitles_.begin(); it != excludedTitles_.end();) {
+                    if (UpdateEngine::normalizeTitle(*it) == norm) {
+                        it = excludedTitles_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
         } else {
+            if (!norm.empty()) {
+                for (auto it = excludedTitles_.begin(); it != excludedTitles_.end();) {
+                    if (UpdateEngine::normalizeTitle(*it) == norm) {
+                        it = excludedTitles_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
             excludedTitles_.insert(choice.title);
         }
     }
@@ -1268,7 +1290,7 @@ void App::configureUpdates() {
     std::vector<UpdateChoice> next;
     next.reserve(titles.size());
     for (const auto& title : titles) {
-        const bool enabled = excludedTitles_.count(title) == 0;
+        const bool enabled = !UpdateEngine::isTitleBlocked(title, excludedTitles_);
         next.push_back(UpdateChoice{title, enabled});
     }
 

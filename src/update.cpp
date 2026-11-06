@@ -871,8 +871,149 @@ void UpdateEngine::setStatsCallback(StatsCallback callback) {
     statsCallback_ = std::move(callback);
 }
 
+std::wstring UpdateEngine::normalizeTitle(std::wstring_view title) {
+    // Lowercase + strip volatile bits (KB ids, YYYY-MM dates, build numbers) so
+    // "… Cumulative Update … (KB5046617)" still matches next month's new KB.
+    std::wstring out;
+    out.reserve(title.size());
+    for (wchar_t ch : title) {
+        out.push_back(static_cast<wchar_t>(std::towlower(ch)));
+    }
+
+    auto eraseAllRegexLike = [](std::wstring& text, auto eraseOnce) {
+        while (eraseOnce(text)) {
+        }
+    };
+
+    // (kb1234567) or kb1234567
+    eraseAllRegexLike(out, [](std::wstring& text) {
+        const auto kb = text.find(L"kb");
+        if (kb == std::wstring::npos) {
+            return false;
+        }
+        size_t start = kb;
+        if (start > 0 && text[start - 1] == L'(') {
+            --start;
+        }
+        size_t end = kb + 2;
+        while (end < text.size() && text[end] >= L'0' && text[end] <= L'9') {
+            ++end;
+        }
+        if (end == kb + 2) {
+            return false;  // "kb" without digits — leave alone
+        }
+        if (start < kb && end < text.size() && text[end] == L')') {
+            ++end;
+        }
+        text.erase(start, end - start);
+        return true;
+    });
+
+    // Leading or embedded YYYY-MM / YYYY-MM-DD (e.g. "2024-11 " or "2024-11-12 ")
+    eraseAllRegexLike(out, [](std::wstring& text) {
+        for (size_t i = 0; i + 7 <= text.size(); ++i) {
+            const bool year = text[i] >= L'0' && text[i] <= L'9' && text[i + 1] >= L'0' &&
+                              text[i + 1] <= L'9' && text[i + 2] >= L'0' && text[i + 2] <= L'9' &&
+                              text[i + 3] >= L'0' && text[i + 3] <= L'9' && text[i + 4] == L'-' &&
+                              text[i + 5] >= L'0' && text[i + 5] <= L'9' && text[i + 6] >= L'0' &&
+                              text[i + 6] <= L'9';
+            if (!year) {
+                continue;
+            }
+            size_t end = i + 7;
+            if (end + 3 <= text.size() && text[end] == L'-' && text[end + 1] >= L'0' &&
+                text[end + 1] <= L'9' && text[end + 2] >= L'0' && text[end + 2] <= L'9') {
+                end += 3;
+            }
+            text.erase(i, end - i);
+            return true;
+        }
+        return false;
+    });
+
+    // Build/revision blobs like 10.0.26100.2454 or (26100.2454)
+    eraseAllRegexLike(out, [](std::wstring& text) {
+        for (size_t i = 0; i + 3 < text.size(); ++i) {
+            if (!(text[i] >= L'0' && text[i] <= L'9')) {
+                continue;
+            }
+            size_t j = i;
+            int dots = 0;
+            while (j < text.size() &&
+                   ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L'.')) {
+                if (text[j] == L'.') {
+                    ++dots;
+                }
+                ++j;
+            }
+            if (dots >= 2 && j - i >= 5) {
+                size_t start = i;
+                size_t end = j;
+                if (start > 0 && text[start - 1] == L'(') {
+                    --start;
+                }
+                if (start < i && end < text.size() && text[end] == L')') {
+                    ++end;
+                }
+                text.erase(start, end - start);
+                return true;
+            }
+        }
+        return false;
+    });
+
+    // Collapse to single spaces, keep letters/digits (incl. accented via iswalnum).
+    std::wstring collapsed;
+    collapsed.reserve(out.size());
+    bool space = false;
+    for (wchar_t ch : out) {
+        if (std::iswalnum(ch) || ch == L'.' || ch == L'+') {
+            collapsed.push_back(ch);
+            space = false;
+        } else if (!space) {
+            collapsed.push_back(L' ');
+            space = true;
+        }
+    }
+    while (!collapsed.empty() && collapsed.front() == L' ') {
+        collapsed.erase(collapsed.begin());
+    }
+    while (!collapsed.empty() && collapsed.back() == L' ') {
+        collapsed.pop_back();
+    }
+    return collapsed;
+}
+
+bool UpdateEngine::isTitleBlocked(std::wstring_view title,
+                                  const std::unordered_set<std::wstring>& blocked) {
+    if (blocked.empty()) {
+        return false;
+    }
+    const std::wstring exact(title);
+    if (blocked.count(exact) > 0) {
+        return true;
+    }
+    const std::wstring norm = normalizeTitle(title);
+    if (norm.empty()) {
+        return false;
+    }
+    for (const auto& entry : blocked) {
+        if (normalizeTitle(entry) == norm) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void UpdateEngine::setExcludedTitles(std::unordered_set<std::wstring> titles) {
     excludedTitles_ = std::move(titles);
+    excludedNormalized_.clear();
+    for (const auto& t : excludedTitles_) {
+        const std::wstring norm = normalizeTitle(t);
+        if (!norm.empty()) {
+            excludedNormalized_.insert(norm);
+        }
+    }
 }
 
 std::vector<std::wstring> UpdateEngine::listPendingTitles(std::wstring* error) {
@@ -1200,8 +1341,11 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
             const std::wstring title = updateTitle(update.get());
 
-            if (!excludedTitles_.empty() && excludedTitles_.count(title) > 0) {
-                log(L"Skipped (user config): " + title);
+            if (!excludedTitles_.empty() &&
+                (excludedTitles_.count(title) > 0 ||
+                 (!excludedNormalized_.empty() &&
+                  excludedNormalized_.count(normalizeTitle(title)) > 0))) {
+                log(L"Skipped (filtro updates, match por família/KB-agnóstico): " + title);
                 ++skipped;
                 totals_.skipped += 1;
                 refreshFinished();

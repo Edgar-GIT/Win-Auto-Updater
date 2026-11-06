@@ -22,6 +22,7 @@ struct PickerState {
     std::vector<UpdateChoice>* choices = nullptr;
     HFONT font = nullptr;
     HWND list = nullptr;
+    WNDPROC listPrevProc = nullptr;
     int result = IDCANCEL;
 };
 
@@ -72,11 +73,6 @@ int hitCheckIndex(HWND list, int x, int y) {
     if (index < 0 || index >= count) {
         return -1;
     }
-    const int checkLeft = client.right - kPad - kCheckSize;
-    if (x >= checkLeft && x <= checkLeft + kCheckSize) {
-        return index;
-    }
-    // Also toggle when clicking the row text.
     if (x >= 0 && x < client.right) {
         return index;
     }
@@ -96,6 +92,43 @@ void toggleAt(HWND hwnd, int index) {
     }
 }
 
+void toggleSelected(HWND hwnd) {
+    auto* state = stateOf(hwnd);
+    if (!state || !state->list) {
+        return;
+    }
+    const int sel = static_cast<int>(SendMessageW(state->list, LB_GETCURSEL, 0, 0));
+    if (sel != LB_ERR) {
+        toggleAt(hwnd, sel);
+    }
+}
+
+LRESULT CALLBACK listSubclassProc(HWND list, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HWND parent = GetParent(list);
+    auto* state = stateOf(parent);
+    const WNDPROC prev = state && state->listPrevProc ? state->listPrevProc : DefWindowProcW;
+
+    if (msg == WM_KEYDOWN) {
+        if (wParam == VK_RETURN || wParam == VK_SPACE) {
+            toggleSelected(parent);
+            return 0;
+        }
+        // Up/Down/Home/End/Page — let the listbox move selection without toggling.
+    }
+    if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK) {
+        const int x = static_cast<short>(LOWORD(lParam));
+        const int y = static_cast<short>(HIWORD(lParam));
+        const LRESULT r = CallWindowProcW(prev, list, msg, wParam, lParam);
+        const int hit = hitCheckIndex(list, x, y);
+        if (hit >= 0) {
+            SendMessageW(list, LB_SETCURSEL, static_cast<WPARAM>(hit), 0);
+            toggleAt(parent, hit);
+        }
+        return r;
+    }
+    return CallWindowProcW(prev, list, msg, wParam, lParam);
+}
+
 LRESULT CALLBACK pickerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_NCCREATE: {
@@ -106,24 +139,24 @@ LRESULT CALLBACK pickerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         case WM_CREATE: {
             auto* state = stateOf(hwnd);
             CreateWindowExW(0, L"STATIC",
-                            L"Verde = instalar. Vermelho = bloquear.\r\n"
-                            L"Guardado em helpers\\update_filter.txt (passa entre PCs).",
+                            L"Verde = instalar. Vermelho = bloquear.  ↑↓ · Enter/Espaço.\r\n"
+                            L"helpers\\update_filter.txt — bloqueia a família (ignora KB/data).",
                             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdHint)), nullptr,
                             nullptr);
 
             state->list = CreateWindowExW(
                 WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_OWNERDRAWFIXED | LBS_NOTIFY |
-                    LBS_NOINTEGRALHEIGHT,
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_OWNERDRAWFIXED |
+                    LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_WANTKEYBOARDINPUT,
                 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdList)), nullptr,
                 nullptr);
 
-            CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 0, 0, 0,
-                            0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdOk)), nullptr,
-                            nullptr);
-            CreateWindowExW(0, L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCancel)), nullptr,
+            CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP,
+                            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdOk)),
+                            nullptr, nullptr);
+            CreateWindowExW(0, L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 0, 0,
+                            hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCancel)), nullptr,
                             nullptr);
 
             if (state->font) {
@@ -140,8 +173,15 @@ LRESULT CALLBACK pickerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                     SendMessageW(state->list, LB_ADDSTRING, 0,
                                  reinterpret_cast<LPARAM>(c.title.c_str()));
                 }
+                if (!state->choices->empty()) {
+                    SendMessageW(state->list, LB_SETCURSEL, 0, 0);
+                }
             }
+
+            state->listPrevProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+                state->list, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(listSubclassProc)));
             layoutPicker(hwnd);
+            SetFocus(state->list);
             return 0;
         }
         case WM_SIZE:
@@ -170,6 +210,7 @@ LRESULT CALLBACK pickerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             }
             const auto& choice = (*state->choices)[static_cast<size_t>(index)];
             const bool selected = (dis->itemState & ODS_SELECTED) != 0;
+            const bool focused = (dis->itemState & ODS_FOCUS) != 0;
 
             HBRUSH bg = CreateSolidBrush(selected ? RGB(232, 240, 254) : RGB(255, 255, 255));
             FillRect(dis->hDC, &dis->rcItem, bg);
@@ -206,23 +247,24 @@ LRESULT CALLBACK pickerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 SelectObject(dis->hDC, old);
                 DeleteObject(white);
             }
+            if (focused) {
+                DrawFocusRect(dis->hDC, &dis->rcItem);
+            }
             return TRUE;
+        }
+        case WM_VKEYTOITEM: {
+            // LBS_WANTKEYBOARDINPUT — handle Enter/Space here too.
+            const int key = LOWORD(wParam);
+            if (key == VK_RETURN || key == VK_SPACE) {
+                toggleSelected(hwnd);
+                return -2;  // no further processing
+            }
+            return -1;  // default listbox handling (arrows, etc.)
         }
         case WM_COMMAND: {
             const int id = LOWORD(wParam);
-            const int code = HIWORD(wParam);
             auto* state = stateOf(hwnd);
-            if (id == kIdList && (code == LBN_SELCHANGE || code == LBN_DBLCLK)) {
-                POINT pt{};
-                GetCursorPos(&pt);
-                HWND list = GetDlgItem(hwnd, kIdList);
-                ScreenToClient(list, &pt);
-                const int hit = hitCheckIndex(list, pt.x, pt.y);
-                if (hit >= 0) {
-                    toggleAt(hwnd, hit);
-                }
-                return 0;
-            }
+            // Do NOT toggle on LBN_SELCHANGE — arrows must only move the selection.
             if (id == kIdOk) {
                 if (state) {
                     state->result = IDOK;
@@ -298,6 +340,12 @@ bool showUpdatePickerDialog(HWND parent, HINSTANCE instance, HFONT font,
             (msg.hwnd == dlg || IsChild(dlg, msg.hwnd))) {
             state.result = IDCANCEL;
             DestroyWindow(dlg);
+            continue;
+        }
+        // Keep Enter on the list as toggle (not OK), when the list has focus.
+        if (msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN || msg.wParam == VK_SPACE) &&
+            state.list && (msg.hwnd == state.list || GetFocus() == state.list)) {
+            toggleSelected(dlg);
             continue;
         }
         if (!IsDialogMessageW(dlg, &msg)) {

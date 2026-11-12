@@ -1,6 +1,9 @@
 #include "../include/app.hpp"
 
+#include <shellapi.h>
 #include <windows.h>
+
+#include <string>
 
 namespace {
 
@@ -29,9 +32,53 @@ bool alreadyRunning() {
     return false;
 }
 
+// "--wait-pid=<pid>": this copy was started by an instance that is closing so
+// it can reopen itself (automatic retry after a failed update). Wait for that
+// instance to exit first, otherwise the single-instance check would reject us.
+void waitForPreviousInstance(int argc, wchar_t** argv) {
+    const std::wstring prefix = L"--wait-pid=";
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg = argv[i];
+        if (arg.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        DWORD pid = 0;
+        try {
+            pid = static_cast<DWORD>(std::stoul(arg.substr(prefix.size())));
+        } catch (...) {
+            pid = 0;
+        }
+        if (pid == 0) {
+            return;
+        }
+        if (HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
+            WaitForSingleObject(process, 30000);
+            CloseHandle(process);
+        }
+        // Give the old instance's COM / Windows Update handles a moment to go.
+        Sleep(700);
+        return;
+    }
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+
+#ifdef SU_UI_SNAPSHOT
+    if (argv != nullptr && argc >= 3 && std::wstring(argv[1]) == L"--ui-snapshot") {
+        App snapshot(instance);
+        return snapshot.runSnapshot(argv[2]);
+    }
+#endif
+
+    if (argv != nullptr) {
+        waitForPreviousInstance(argc, argv);
+        LocalFree(argv);
+    }
+
     if (alreadyRunning()) {
         return 0;
     }

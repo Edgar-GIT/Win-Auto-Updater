@@ -23,6 +23,7 @@ add_executable(SingleUpdate WIN32
     src/drivers.cpp
     src/stress.cpp
     src/macro.cpp
+    src/ui.cpp
     resources/app.rc
 )
 
@@ -57,6 +58,7 @@ target_link_options(SingleUpdate PRIVATE
     -static-libstdc++
     -mwindows
     -municode
+    -s
 )
 
 target_link_libraries(SingleUpdate PRIVATE
@@ -73,7 +75,14 @@ target_link_libraries(SingleUpdate PRIVATE
     version
     secur32
     dwmapi
+    gdiplus
 )
+
+# Developer aid: "SingleUpdate.exe --ui-snapshot <dir>" renders every screen to PNG.
+option(SU_UI_SNAPSHOT "Build the UI snapshot renderer (dev only)" OFF)
+if(SU_UI_SNAPSHOT)
+    target_compile_definitions(SingleUpdate PRIVATE SU_UI_SNAPSHOT)
+endif()
 
 set_target_properties(SingleUpdate PROPERTIES
     OUTPUT_NAME "SingleUpdate"

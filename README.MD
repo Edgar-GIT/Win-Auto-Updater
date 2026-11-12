@@ -13,9 +13,25 @@ Built with MinGW-w64 and CMake (no .NET, Python, Qt, or Electron).
 1. Requests administrator privileges  
 2. Checks Internet connectivity  
 3. Creates a scheduled task to resume after reboot  
-4. Searches, downloads, and installs Windows Updates (including drivers)  
+4. Searches, downloads, and installs Windows Updates (including drivers and
+   Microsoft Defender updates — definitions fall back to `MpCmdRun -SignatureUpdate`)  
 5. Reboots automatically when required and continues until the system is up to date  
 6. Shows a final message, removes the scheduled task, and deletes itself
+
+If an update run fails, the tool closes and reopens itself once
+(`--wait-pid/--auto-retry/--retried`) and retries; only a second failure shows
+the error screen (with a manual **Tentar novamente** button). The full log is
+appended to `%TEMP%\WinAutoUpdater\updater.log`.
+
+### Interface
+
+Single GDI+ surface (`src/ui.cpp`, no child controls): dark glass theme, per-monitor
+DPI aware, resizable. The layout is authored at 940×580 and scaled to the window,
+and the window is fitted to the monitor work area at startup and whenever the
+display mode changes — it works from 800×600 up to 4K at any Windows scaling.
+
+Developer aid: configure with `-DSU_UI_SNAPSHOT=ON` and run
+`SingleUpdate.exe --ui-snapshot <dir>` to render every screen to PNG.
 
 ---
 
@@ -128,6 +144,9 @@ Buttons: **Open test tools** (launch only, MemTest on top) · **Run stress tests
 (launch + replay macro) · **Record macro**. Details: [`py_src/README.md`](py_src/README.md).
 
 `stress.ini`: `MacroEngine=python` (default), `MacroFile=macro.json`, `UseMacro=1`.  
+`MacroGapMs=0` (default) lets MacroHelper pace the clicks from a quick CPU probe
+(≈0.7 s on a fast PC … 2 s on a very slow one) plus an active wait for each target
+window; set e.g. `MacroGapMs=1000` to force a fixed gap.  
 Set `MacroEngine=cpp` for the legacy in-process recorder (`macro.txt`).
 
 ---

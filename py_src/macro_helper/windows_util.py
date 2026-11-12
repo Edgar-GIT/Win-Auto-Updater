@@ -261,11 +261,13 @@ def snapshot_foreground() -> TargetSnapshot | None:
 
 
 def _title_fuzzy_bonus(want_title: str, have_title: str) -> int:
-    """Score title similarity — exact substring, or shared significant tokens."""
+    """Score title similarity — exact, substring, or shared significant tokens."""
     want = (want_title or "").strip().lower()
     have = (have_title or "").strip().lower()
     if not want:
         return 0
+    if want == have:
+        return 5
     if want in have or have in want:
         return 3
     # "Could not allocate 4095 MB" vs "Could not allocate 2048 MB"
@@ -278,25 +280,38 @@ def _title_fuzzy_bonus(want_title: str, have_title: str) -> int:
     return 0
 
 
-def _match_score(hwnd: int, want: WindowInfo) -> int:
+def _match_score(hwnd: int, want: WindowInfo) -> tuple[int, bool]:
+    """(score, exact). score < 0 = no match.
+
+    exact = the recorded class and title both match literally. A merely similar
+    window (same process, e.g. "powerMAX Legal Disclaimer" for "powerMAX", or the
+    main dialog instead of its drop-down list) is only accepted after a grace
+    period — see find_window_timed.
+    """
     proc = process_base_name(hwnd)
     if not proc or proc.lower() != want.process.lower():
-        return -1
+        return -1, False
     score = 10
+    exact = True
     cls = class_name_of(hwnd)
     title = title_of(hwnd)
-    if want.class_name and cls.lower() == want.class_name.lower():
-        score += 5
+    if want.class_name:
+        if cls.lower() == want.class_name.lower():
+            score += 5
+        else:
+            exact = False
     # Title was recorded — require a fuzzy hit so we don't click a different
     # dialog of the same process (e.g. main MemTest vs OOM message box).
     if want.title:
         title_bonus = _title_fuzzy_bonus(want.title, title)
         if title_bonus <= 0:
-            return -1
+            return -1, False
         score += title_bonus
+        if title_bonus < 5:
+            exact = False
     if win32gui.IsWindowVisible(hwnd):
         score += 1
-    return score
+    return score, exact
 
 
 def process_running(image_name: str) -> bool:
@@ -321,44 +336,142 @@ def process_running(image_name: str) -> bool:
     return bool(found["ok"])
 
 
-def find_window(want: WindowInfo, timeout_s: float = 60.0, poll_s: float = 0.25) -> int:
-    """Wait until a top-level window matching process (+ optional class/title) appears.
+def find_window_timed(
+    want: WindowInfo,
+    timeout_s: float = 60.0,
+    poll_s: float = 0.1,
+    fuzzy_grace_s: float = 1.5,
+) -> tuple[int, float]:
+    """Wait for a top-level window matching process (+ optional class/title).
 
-    Fail-fast if the process is not running for a few seconds (avoids 15s waits after
-    MemTest already exited). Falls back to process-only match if class/title differ.
+    Returns (hwnd, seconds_waited); hwnd 0 = not found. An exact class/title
+    match is returned immediately. A merely similar window of the same process
+    is only accepted once ``fuzzy_grace_s`` has passed, so a fast replay does not
+    click a dialog that is about to be replaced by the recorded one.
+
+    Fail-fast if the process is not running for a few seconds (avoids long waits
+    after e.g. MemTest already exited).
     """
     if not want.process:
-        return 0
-    deadline = time.monotonic() + timeout_s
+        return 0, 0.0
+    start = time.monotonic()
+    deadline = start + timeout_s
+    grace_deadline = start + min(timeout_s, max(0.0, fuzzy_grace_s))
     missing_proc_since: float | None = None
 
     while True:
-        candidates: list[tuple[int, int]] = []
+        candidates: list[tuple[int, int, bool]] = []
 
         def _enum(hwnd, _):
             if not win32gui.IsWindowVisible(hwnd):
                 return True
-            score = _match_score(hwnd, want)
+            score, exact = _match_score(hwnd, want)
             if score >= 0:
-                candidates.append((score, int(hwnd)))
+                candidates.append((score, int(hwnd), exact))
             return True
 
         win32gui.EnumWindows(_enum, None)
+        now = time.monotonic()
         if candidates:
             candidates.sort(reverse=True)
-            return candidates[0][1]
+            score, hwnd, exact = candidates[0]
+            if exact or now >= grace_deadline:
+                return hwnd, now - start
 
         # Process gone → don't burn the full timeout (common after MemTest closes).
-        if not process_running(want.process):
+        if not candidates and not process_running(want.process):
             if missing_proc_since is None:
-                missing_proc_since = time.monotonic()
-            elif time.monotonic() - missing_proc_since >= 2.0:
-                return 0
+                missing_proc_since = now
+            elif now - missing_proc_since >= 2.0:
+                return 0, now - start
         else:
             missing_proc_since = None
 
-        if time.monotonic() >= deadline:
-            return 0
+        if now >= deadline:
+            return 0, now - start
+        time.sleep(poll_s)
+
+
+def find_window(want: WindowInfo, timeout_s: float = 60.0, poll_s: float = 0.1) -> int:
+    """Compatibility wrapper around find_window_timed (returns only the hwnd)."""
+    return find_window_timed(want, timeout_s=timeout_s, poll_s=poll_s)[0]
+
+
+_SMTO_ABORTIFHUNG = 0x0002
+_WM_NULL = 0x0000
+
+user32.SendMessageTimeoutW.argtypes = [
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+    wintypes.UINT,
+    wintypes.UINT,
+    ctypes.POINTER(ctypes.c_size_t),
+]
+user32.SendMessageTimeoutW.restype = ctypes.c_size_t
+
+
+def window_latency(hwnd: int, timeout_ms: int = 250) -> float | None:
+    """Seconds the window's thread takes to answer a WM_NULL; None = no answer."""
+    result = ctypes.c_size_t(0)
+    t0 = time.perf_counter()
+    ok = user32.SendMessageTimeoutW(
+        hwnd, _WM_NULL, 0, 0, _SMTO_ABORTIFHUNG, timeout_ms, ctypes.byref(result)
+    )
+    if not ok:
+        return None
+    return time.perf_counter() - t0
+
+
+def wait_window_ready(
+    hwnd: int,
+    timeout_s: float = 4.0,
+    stable_s: float = 0.12,
+    poll_s: float = 0.04,
+) -> tuple[bool, float, float]:
+    """Wait until the window can take a click.
+
+    Ready = visible, enabled (not blocked by a modal child), its message loop
+    answers, and its rectangle has stopped moving for ``stable_s``. This is what
+    lets a fast PC replay quickly while a slow or busy one automatically waits
+    longer. Returns (ready, seconds_waited, last_latency_s).
+    """
+    start = time.monotonic()
+    deadline = start + timeout_s
+    last_rect: tuple[int, int, int, int] | None = None
+    stable_since: float | None = None
+    latency = 0.0
+    while True:
+        now = time.monotonic()
+        try:
+            alive = bool(win32gui.IsWindow(hwnd))
+            usable = alive and bool(win32gui.IsWindowVisible(hwnd)) and bool(
+                win32gui.IsWindowEnabled(hwnd)
+            )
+            rect = win32gui.GetWindowRect(hwnd) if alive else None
+        except Exception:
+            alive, usable, rect = False, False, None
+        if not alive:
+            return False, now - start, latency
+
+        if usable:
+            answer = window_latency(hwnd)
+            if answer is None:
+                usable = False
+            else:
+                latency = answer
+        if usable and rect == last_rect:
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since >= stable_s:
+                return True, now - start, latency
+        else:
+            stable_since = None
+        last_rect = rect
+
+        if now >= deadline:
+            return False, now - start, latency
         time.sleep(poll_s)
 
 

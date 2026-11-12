@@ -14,20 +14,24 @@ from .dpi import enable_dpi_awareness
 from .schema import empty_document, load_macro, save_macro
 from .windows_util import root_of
 
-# Match SingleUpdate Fluent palette (src/app.cpp).
-BG = "#F3F3F3"
-HEADER = "#0067C0"
-HEADER_SUB = "#D5E7FA"
-CARD = "#FFFFFF"
-BORDER = "#DFDFDF"
-TEXT = "#1B1B1B"
-TEXT_SEC = "#606060"
-ACCENT = "#0067C0"
-ACCENT_DARK = "#004E94"
-RED = "#C42B1C"
-AMBER = "#9D5D00"
-TERMINAL_BG = "#1E1E1E"
-TERMINAL_FG = "#CCCCCC"
+# Match the SingleUpdate dark glass theme (include/ui.hpp).
+BG = "#0A0F1E"
+HEADER = "#101A36"
+HEADER_SUB = "#96A3BA"
+CARD = "#131B30"
+BORDER = "#2A3654"
+TEXT = "#EAF0FA"
+TEXT_SEC = "#96A3BA"
+ACCENT = "#3DD6F5"
+ACCENT_DARK = "#2BB8D6"
+INK = "#051221"  # text on bright accent buttons
+RED = "#F87171"
+RED_DARK = "#DC5B5B"
+AMBER = "#FBBF24"
+HOVER = "#1D2844"
+FIELD = "#0D1426"
+TERMINAL_BG = "#0B1122"
+TERMINAL_FG = "#C9D4E6"
 
 
 def _resolve_icon() -> Path | None:
@@ -112,11 +116,11 @@ class RecordApp:
         **pack,
     ) -> tk.Button:
         if danger:
-            bg, fg, active = RED, "#FFFFFF", "#9E2216"
+            bg, fg, active = RED, INK, RED_DARK
         elif primary:
-            bg, fg, active = ACCENT, "#FFFFFF", ACCENT_DARK
+            bg, fg, active = ACCENT, INK, ACCENT_DARK
         else:
-            bg, fg, active = CARD, TEXT, "#EDEDED"
+            bg, fg, active = HOVER, TEXT, BORDER
         btn = tk.Button(
             parent,
             text=text,
@@ -126,6 +130,7 @@ class RecordApp:
             fg=fg,
             activebackground=active,
             activeforeground=fg,
+            disabledforeground="#5B6880",
             relief=tk.FLAT,
             bd=0,
             padx=12,
@@ -138,17 +143,23 @@ class RecordApp:
         return btn
 
     def _fit_window(self) -> None:
-        """Open large enough to show the full UI (Win10 DPI-safe)."""
+        """Size for the content but never larger than the screen.
+
+        The steps list is the only stretchy part, so on small screens
+        (1366x768, 1024x768, 800x600) it simply gets shorter instead of the
+        bottom buttons falling off the screen.
+        """
         self.root.update_idletasks()
-        # Requested size from content, with a comfortable floor.
-        req_w = max(640, self.root.winfo_reqwidth() + 24)
-        req_h = max(740, self.root.winfo_reqheight() + 24)
-        self.root.minsize(600, 680)
-        # Center on screen
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
+        # Leave room for the title bar and the taskbar.
+        max_w = max(420, sw - 40)
+        max_h = max(360, sh - 110)
+        req_w = min(max_w, max(620, self.root.winfo_reqwidth() + 24))
+        req_h = min(max_h, max(600, self.root.winfo_reqheight() + 60))
+        self.root.minsize(min(480, req_w), min(400, req_h))
         x = max(0, (sw - req_w) // 2)
-        y = max(0, (sh - req_h) // 2)
+        y = max(0, (sh - req_h - 70) // 2)
         self.root.geometry(f"{req_w}x{req_h}+{x}+{y}")
 
     def _build(self) -> None:
@@ -202,7 +213,7 @@ class RecordApp:
             expand=True,
             padx=(6, 0),
         )
-        self.btn_stop.configure(font=("Segoe UI", 11, "bold"), pady=12, state=tk.DISABLED)
+        self.btn_stop.configure(font=("Segoe UI", 11, "bold"), pady=12, state=tk.DISABLED, bg=HOVER)
 
         status_row = tk.Frame(inner, bg=CARD)
         status_row.pack(fill=tk.X, pady=(10, 0))
@@ -241,8 +252,9 @@ class RecordApp:
             path_row,
             textvariable=self._path_var,
             font=("Segoe UI", 10),
-            bg="#FAFAFA",
+            bg=FIELD,
             fg=TEXT,
+            insertbackground=TEXT,
             relief=tk.FLAT,
             highlightthickness=1,
             highlightbackground=BORDER,
@@ -251,49 +263,8 @@ class RecordApp:
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6, padx=(0, 6))
         self._btn(path_row, "…", self._browse, side=tk.LEFT).configure(padx=10, pady=6)
 
-        # Steps list
-        list_card = self._card(self.root, fill=tk.BOTH, expand=True)
-        list_inner = tk.Frame(list_card, bg=CARD)
-        list_inner.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
-        tk.Label(
-            list_inner,
-            text="Passos capturados",
-            font=("Segoe UI", 9),
-            bg=CARD,
-            fg=TEXT_SEC,
-            anchor="w",
-        ).pack(fill=tk.X)
-        list_frame = tk.Frame(list_inner, bg=TERMINAL_BG)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-        scroll = tk.Scrollbar(list_frame)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.listbox = tk.Listbox(
-            list_frame,
-            yscrollcommand=scroll.set,
-            font=("Consolas", 10),
-            bg=TERMINAL_BG,
-            fg=TERMINAL_FG,
-            selectbackground=ACCENT,
-            selectforeground="#FFFFFF",
-            relief=tk.FLAT,
-            activestyle="none",
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
-        scroll.config(command=self.listbox.yview)
-
-        # Edit actions
-        edit = tk.Frame(list_inner, bg=CARD)
-        edit.pack(fill=tk.X, pady=(8, 0))
-        self._btn(edit, "Desfazer", self.undo, side=tk.LEFT, padx=(0, 4))
-        self._btn(edit, "Apagar selecionado", self.delete_selected, side=tk.LEFT, padx=4)
-        self._btn(edit, "Limpar tudo", self.clear_all, side=tk.LEFT, padx=4)
-        self.btn_pause = self._btn(edit, "Pausa", self.toggle_pause, side=tk.LEFT, padx=4)
-        self.btn_pause.configure(state=tk.DISABLED)
-
         # Bottom bar
-        bottom_card = self._card(self.root, fill=tk.X)
+        bottom_card = self._card(self.root, fill=tk.X, side=tk.BOTTOM)
         bottom = tk.Frame(bottom_card, bg=CARD)
         bottom.pack(fill=tk.X, padx=10, pady=8)
         self._btn(bottom, "Guardar macro", self.save, primary=True, side=tk.LEFT, padx=(0, 4))
@@ -313,7 +284,8 @@ class RecordApp:
             bg=CARD,
             fg=TEXT_SEC,
             activebackground=CARD,
-            selectcolor=CARD,
+            activeforeground=TEXT,
+            selectcolor=FIELD,
             highlightthickness=0,
         ).pack(side=tk.RIGHT)
 
@@ -322,14 +294,60 @@ class RecordApp:
             "F10 para a gravação (consumido). Cliques nesta janela não são gravados.\n"
             "Corre como Administrador se as apps alvo forem elevadas."
         )
-        tk.Label(
+        hint_label = tk.Label(
             self.root,
             text=hint,
             justify=tk.LEFT,
             font=("Segoe UI", 9),
             bg=BG,
             fg=TEXT_SEC,
-        ).pack(fill=tk.X, padx=16, pady=(0, 10))
+        )
+        hint_label.pack(fill=tk.X, padx=16, pady=(0, 10), side=tk.BOTTOM)
+        # The bottom bar was packed first, so re-pack it above the hint.
+        bottom_card.master.pack_forget()
+        bottom_card.master.pack(fill=tk.X, side=tk.BOTTOM)
+
+        # Steps list
+        list_card = self._card(self.root, fill=tk.BOTH, expand=True)
+        list_inner = tk.Frame(list_card, bg=CARD)
+        list_inner.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        tk.Label(
+            list_inner,
+            text="Passos capturados",
+            font=("Segoe UI", 9),
+            bg=CARD,
+            fg=TEXT_SEC,
+            anchor="w",
+        ).pack(fill=tk.X)
+        list_frame = tk.Frame(list_inner, bg=TERMINAL_BG)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        scroll = tk.Scrollbar(list_frame, bg=CARD, troughcolor=TERMINAL_BG, bd=0)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.listbox = tk.Listbox(
+            list_frame,
+            yscrollcommand=scroll.set,
+            font=("Consolas", 10),
+            bg=TERMINAL_BG,
+            fg=TERMINAL_FG,
+            height=6,
+            selectbackground=ACCENT,
+            selectforeground=INK,
+            relief=tk.FLAT,
+            activestyle="none",
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
+        scroll.config(command=self.listbox.yview)
+
+        # Edit actions
+        edit = tk.Frame(list_inner, bg=CARD)
+        edit.pack(fill=tk.X, pady=(8, 0))
+        self._btn(edit, "Desfazer", self.undo, side=tk.LEFT, padx=(0, 4))
+        self._btn(edit, "Apagar selecionado", self.delete_selected, side=tk.LEFT, padx=4)
+        self._btn(edit, "Limpar tudo", self.clear_all, side=tk.LEFT, padx=4)
+        self.btn_pause = self._btn(edit, "Pausa", self.toggle_pause, side=tk.LEFT, padx=4)
+        self.btn_pause.configure(state=tk.DISABLED)
 
     def run(self) -> int:
         self.root.mainloop()
@@ -356,14 +374,15 @@ class RecordApp:
         if recording:
             self._status.set("A GRAVAR")
             self.status_label.configure(fg=RED)
-            self.btn_start.configure(state=tk.DISABLED)
-            self.btn_stop.configure(state=tk.NORMAL)
+            # Disabled accent buttons are dimmed so the active one stands out.
+            self.btn_start.configure(state=tk.DISABLED, bg=HOVER)
+            self.btn_stop.configure(state=tk.NORMAL, bg=ACCENT)
             self.btn_pause.configure(state=tk.NORMAL, text="Pausa")
         else:
             self._status.set("Parado")
             self.status_label.configure(fg=TEXT)
-            self.btn_start.configure(state=tk.NORMAL)
-            self.btn_stop.configure(state=tk.DISABLED)
+            self.btn_start.configure(state=tk.NORMAL, bg=RED)
+            self.btn_stop.configure(state=tk.DISABLED, bg=HOVER)
             self.btn_pause.configure(state=tk.DISABLED, text="Pausa")
 
     def start_recording(self) -> None:

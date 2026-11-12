@@ -70,11 +70,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait for each target window (default: auto from PC speed probe)",
     )
     p.add_argument(
+        "--gap-seconds",
         "--pad-seconds",
+        dest="gap_seconds",
         type=float,
         default=None,
         metavar="SEC",
-        help="Extra seconds on top of every recorded gap (default: auto from PC speed probe)",
+        help=(
+            "Minimum seconds between two macro actions (default: auto from the PC "
+            "speed probe, about 0.7-2.0). --pad-seconds is the old name."
+        ),
     )
     p.add_argument(
         "--on-fail",
@@ -177,25 +182,21 @@ def main(argv: list[str] | None = None) -> int:
     _tee(timing.detail)
     print(timing.detail, flush=True)
 
-    pad_ms = (
-        int(max(0.0, float(args.pad_seconds)) * 1000)
-        if args.pad_seconds is not None
-        else timing.pad_ms
-    )
-    timeout_s = float(args.timeout) if args.timeout is not None else timing.timeout_s
-    gap_scale = timing.gap_scale
-    if args.pad_seconds is not None or args.timeout is not None:
-        # Manual overrides: keep recorded gaps at 1.0× (user is tuning pad/timeout).
-        gap_scale = 1.0
-        override = f"Overrides: pad={pad_ms}ms timeout={timeout_s:.1f}s gap_scale=1.00"
+    if args.gap_seconds is not None or args.timeout is not None:
+        from dataclasses import replace
+
+        if args.gap_seconds is not None:
+            gap_ms = int(max(0.2, min(30.0, float(args.gap_seconds))) * 1000)
+            timing = replace(timing, gap_ms=gap_ms, settle_ms=int(max(250, min(900, gap_ms * 0.45))))
+        if args.timeout is not None:
+            timing = replace(timing, timeout_s=max(1.0, float(args.timeout)))
+        override = f"Overrides: gap={timing.gap_ms}ms timeout={timing.timeout_s:.1f}s"
         _tee(override)
         print(override, flush=True)
 
     report = play_file(
         path,
-        window_timeout_s=timeout_s,
-        pad_ms=pad_ms,
-        gap_scale=gap_scale,
+        timing=timing,
         on_fail=args.on_fail,
         log=_tee,
     )

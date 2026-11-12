@@ -3,6 +3,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -22,6 +23,9 @@ struct UpdateStats {
     int skipped = 0;
     int failed = 0;
     int finished = 0;  // installed + skipped + failed (items fully processed)
+    // Microsoft Defender (antivirus) updates: applied / could not be applied.
+    int avUpdated = 0;
+    int avFailed = 0;
 };
 
 class UpdateEngine {
@@ -88,7 +92,9 @@ private:
     StatsCallback statsCallback_;
 
     UpdateStats totals_;
-    bool avNoticeShown_ = false;
+    // Attempts per antivirus update family (normalized title) — bounds retries so a
+    // definition update that keeps reappearing can never loop forever.
+    std::unordered_map<std::wstring, int> avAttempts_;
     std::unordered_set<std::wstring> excludedTitles_;
     std::unordered_set<std::wstring> excludedNormalized_;
 

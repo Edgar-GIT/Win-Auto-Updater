@@ -42,6 +42,10 @@ struct Config {
     // Macro file for the python engine. Default: helpers\macro.json next to
     // SingleUpdate.exe. Absolute paths are honored.
     std::wstring macroFile = L"macro.json";
+    // Minimum milliseconds between two macro actions. 0 = automatic (MacroHelper
+    // probes the PC speed: ~0.7 s fast … 2 s very slow, plus an active wait for
+    // each target window).
+    int macroGapMs = 0;
     // Starts the bench automatically right after a successful update.
     // Deploy: Desktop\SingleUpdate.exe + Desktop\helpers\ (tools, macro, …).
     bool autoRunStress = true;

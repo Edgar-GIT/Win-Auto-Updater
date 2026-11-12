@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -148,6 +149,14 @@ std::wstring describeHresult(HRESULT hr) {
             return L"Update not applicable";
         case 0x8024001E:  // WU_E_SERVICE_STOP
             return L"Windows Update service stopped";
+        case 0x80240022:  // WU_E_ALL_UPDATES_FAILED
+            return L"Operation failed for all updates";
+        case 0x8024002E:  // WU_E_WU_DISABLED
+            return L"Access to an unmanaged server is not allowed";
+        case 0x80070643:  // ERROR_INSTALL_FAILURE
+            return L"Fatal error during installation";
+        case 0x80070652:  // ERROR_INSTALL_ALREADY_RUNNING
+            return L"Another installation is already in progress";
         case 0x8024402C:  // WU_E_PT_WINHTTP_NAME_NOT_RESOLVED
             return L"Network name could not be resolved";
         default:
@@ -261,10 +270,135 @@ bool categoryLooksLikeDefender(IUpdate* update) {
     return false;
 }
 
-// Defender/antivirus definitions are managed by Windows Security itself and often
-// fail or conflict when forced through WUA — skip them deliberately.
+// Microsoft Defender updates (definitions KB2267602, platform KB4052623, ...).
+// They are ordinary Windows Update entries and CAN be installed through WUA; they
+// only need a more forgiving path because definitions are superseded several
+// times a day, so a search result can go stale between search and install.
 bool isDefenderRelatedUpdate(IUpdate* update, std::wstring_view title) {
     return titleLooksLikeDefender(title) || categoryLooksLikeDefender(update);
+}
+
+// Definitions (as opposed to the platform/engine package) can also be refreshed
+// by Defender's own updater, MpCmdRun.exe -SignatureUpdate.
+bool titleLooksLikeDefinitions(std::wstring_view title) {
+    const std::wstring lower = toLower(std::wstring(title));
+    static const wchar_t* patterns[] = {
+        L"definition update", L"security intelligence", L"virus definition", L"kb2267602",
+        L"informações de segurança", L"informacoes de seguranca", L"definições", L"definicoes",
+    };
+    for (const wchar_t* pattern : patterns) {
+        if (lower.find(pattern) != std::wstring::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::filesystem::path findMpCmdRun() {
+    std::error_code ec;
+    std::filesystem::path best;
+    std::filesystem::file_time_type bestTime{};
+
+    // Newest platform build first (ProgramData\Microsoft\Windows Defender\Platform\<ver>).
+    wchar_t programData[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH) > 0) {
+        const auto platform = std::filesystem::path(programData) / L"Microsoft" /
+                              L"Windows Defender" / L"Platform";
+        if (std::filesystem::is_directory(platform, ec)) {
+            for (std::filesystem::directory_iterator it(platform, ec), end; !ec && it != end;
+                 it.increment(ec)) {
+                const auto candidate = it->path() / L"MpCmdRun.exe";
+                std::error_code inner;
+                if (!std::filesystem::exists(candidate, inner)) {
+                    continue;
+                }
+                const auto stamp = std::filesystem::last_write_time(it->path(), inner);
+                if (best.empty() || (!inner && stamp > bestTime)) {
+                    best = candidate;
+                    bestTime = stamp;
+                }
+            }
+        }
+    }
+    if (!best.empty()) {
+        return best;
+    }
+
+    wchar_t programFiles[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"ProgramFiles", programFiles, MAX_PATH) > 0) {
+        const auto candidate =
+            std::filesystem::path(programFiles) / L"Windows Defender" / L"MpCmdRun.exe";
+        if (std::filesystem::exists(candidate, ec)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+// Runs a hidden console tool and waits for it. Returns false when it could not
+// be started or timed out; exitCode receives the process exit code otherwise.
+bool runHiddenTool(const std::filesystem::path& exe, const std::wstring& args, DWORD timeoutMs,
+                   DWORD* exitCode) {
+    std::wstring command = L"\"" + exe.wstring() + L"\" " + args;
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                       nullptr, &si, &pi) == 0) {
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
+    bool finished = wait == WAIT_OBJECT_0;
+    if (!finished) {
+        TerminateProcess(pi.hProcess, 1);
+    } else if (exitCode != nullptr) {
+        DWORD code = 1;
+        GetExitCodeProcess(pi.hProcess, &code);
+        *exitCode = code;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return finished;
+}
+
+// Defender's own definition updater. Tries the configured update source first,
+// then Microsoft's Malware Protection Center directly (-MMPC).
+bool runDefenderSignatureUpdate(std::wstring* detail) {
+    const auto tool = findMpCmdRun();
+    if (tool.empty()) {
+        if (detail) {
+            *detail = L"MpCmdRun.exe not found (Microsoft Defender is not installed).";
+        }
+        return false;
+    }
+
+    constexpr DWORD kTimeoutMs = 8 * 60 * 1000;
+    const wchar_t* attempts[] = {L"-SignatureUpdate", L"-SignatureUpdate -MMPC"};
+    std::wstring lastError;
+    for (const wchar_t* args : attempts) {
+        DWORD code = 1;
+        if (!runHiddenTool(tool, args, kTimeoutMs, &code)) {
+            lastError = std::wstring(L"MpCmdRun ") + args + L" could not run or timed out.";
+            continue;
+        }
+        if (code == 0) {
+            if (detail) {
+                *detail = std::wstring(L"MpCmdRun ") + args + L" succeeded.";
+            }
+            return true;
+        }
+        lastError = std::wstring(L"MpCmdRun ") + args + L" failed (" +
+                    formatHresult(static_cast<LONG>(code)) + L").";
+    }
+    if (detail) {
+        *detail = lastError;
+    }
+    return false;
 }
 
 bool updateAlreadyDownloaded(IUpdate* update) {
@@ -1080,11 +1214,7 @@ std::vector<std::wstring> UpdateEngine::listPendingTitles(std::wstring* error) {
         if (FAILED(updates->get_Item(i, update.put())) || !update) {
             continue;
         }
-        const std::wstring title = updateTitle(update.get());
-        if (isDefenderRelatedUpdate(update.get(), title)) {
-            continue;
-        }
-        titles.push_back(title);
+        titles.push_back(updateTitle(update.get()));
     }
     return titles;
 }
@@ -1219,7 +1349,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         searcher->put_ServerSelection(ssWindowsUpdate);
         searcher->put_IncludePotentiallySupersededUpdates(VARIANT_FALSE);
 
-        notify(Phase::Searching, L"Searching for Windows updates...");
+        notify(Phase::Searching, L"A procurar atualizações no Windows Update...");
         log(L"Searching Windows Update catalog...");
 
         ComPtr<ISearchResult> searchResult;
@@ -1252,7 +1382,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         if (count == 0) {
             log(L"No pending updates found. Checking for installed updates needing restart...");
             if (hasPendingRestart(session.get())) {
-                notify(Phase::RebootRequired, L"A restart is required to finish installation.");
+                notify(Phase::RebootRequired, L"É necessário reiniciar para concluir a instalação.");
                 log(L"Updates are installed but pending restart. Reboot needed.");
                 result.success = true;
                 result.pendingRestart = true;
@@ -1260,7 +1390,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
                 return result;
             }
 
-            notify(Phase::CheckingAgain, L"Verifying that the system is fully up to date...");
+            notify(Phase::CheckingAgain, L"A confirmar que o sistema está totalmente atualizado...");
             log(L"No updates found. Polling for catalog stabilization...");
 
             constexpr int kMaxPollSeconds = 5;
@@ -1289,7 +1419,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             }
 
             result.finalVerificationDone = true;
-            notify(Phase::UpToDate, L"This computer is up to date.");
+            notify(Phase::UpToDate, L"Este computador está atualizado.");
             log(L"No updates found and no restart pending after final verification.");
             result.success = true;
             result.upToDate = true;
@@ -1354,22 +1484,81 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             }
 
             if (isDefenderRelatedUpdate(update.get(), title)) {
-                // Antivirus definitions are managed by Windows Security. Count
-                // only a single skip and announce it just once.
+                // Antivirus: install it like any other update, fall back to
+                // Defender's own updater for definitions, and never let it fail
+                // the whole run (worst case it is reported as skipped).
                 ++avSeen;
-                if (!avNoticeShown_) {
-                    avNoticeShown_ = true;
-                    notify(Phase::Downloading, L"Skipping the antivirus update...");
-                    log(L"Skipped antivirus update (handled automatically by Windows Security): " +
-                        title);
-                    log(L"NOTE: Microsoft Defender / antivirus definitions must be updated "
-                        L"manually in Windows Security.");
+                constexpr int kMaxAvAttempts = 2;
+                int& attempts = avAttempts_[normalizeTitle(title)];
+                if (attempts >= kMaxAvAttempts) {
+                    log(L"Antivirus update already attempted " + std::to_wstring(attempts) +
+                        L"x this session, leaving it to Windows Security: " + title);
+                    continue;
+                }
+                ++attempts;
+
+                notify(Phase::Downloading, L"A atualizar o antivírus (Microsoft Defender)...");
+                log(L"Antivirus update: " + title);
+
+                bool avOk = false;
+                bool avReboot = false;
+                std::wstring avDetail;
+                if (acceptEula(update.get())) {
+                    const StepOutcome avDownload =
+                        downloadOne(session.get(), update.get(), updates.get(), i, title);
+                    if (avDownload.ok || updateAlreadyDownloaded(update.get())) {
+                        if (avDownload.ok) {
+                            ++downloaded;
+                            totals_.downloaded += 1;
+                            refreshFinished();
+                            notifyStats();
+                        }
+                        notify(Phase::Installing, L"A instalar a atualização do antivírus...");
+                        const StepOutcome avInstall =
+                            installOne(session.get(), update.get(), updates.get(), i, title);
+                        avOk = avInstall.ok || updateIsInstalled(update.get());
+                        avReboot = avInstall.rebootRequired;
+                        avDetail = avInstall.detail;
+                    } else {
+                        avOk = updateIsInstalled(update.get());
+                        avDetail = avDownload.detail;
+                    }
+                } else {
+                    avDetail = L"EULA not accepted";
+                }
+
+                if (!avOk && titleLooksLikeDefinitions(title)) {
+                    log(L"  Windows Update path failed (" + avDetail +
+                        L") — trying Microsoft Defender's own updater (MpCmdRun)...");
+                    notify(Phase::Installing,
+                           L"A atualizar as definições pelo Microsoft Defender...");
+                    progress(title, 10);
+                    std::wstring toolDetail;
+                    avOk = runDefenderSignatureUpdate(&toolDetail);
+                    log(L"  " + toolDetail);
+                    if (avOk) {
+                        progress(title, 100);
+                    } else {
+                        avDetail += L" | " + toolDetail;
+                    }
+                }
+
+                if (avOk) {
+                    totals_.avUpdated += 1;
+                    markInstalled(title);
+                    if (avReboot) {
+                        rebootRequired = true;
+                        log(L"Restart required after installing: " + title);
+                        break;
+                    }
+                } else {
+                    log(L"Antivirus update could not be applied (non-fatal): " + title + L" — " +
+                        avDetail);
                     ++skipped;
                     totals_.skipped += 1;
+                    totals_.avFailed += 1;
                     refreshFinished();
                     notifyStats();
-                } else {
-                    log(L"Skipping additional antivirus update: " + title);
                 }
                 continue;
             }
@@ -1384,7 +1573,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
                 continue;
             }
 
-            notify(Phase::Downloading, L"Downloading update...");
+            notify(Phase::Downloading, L"A transferir a atualização...");
             const StepOutcome download =
                 downloadOne(session.get(), update.get(), updates.get(), i, title);
             if (!download.ok) {
@@ -1403,7 +1592,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
                 notifyStats();
             }
 
-            notify(Phase::Installing, L"Installing update...");
+            notify(Phase::Installing, L"A instalar a atualização...");
             const StepOutcome install =
                 installOne(session.get(), update.get(), updates.get(), i, title);
             if (!install.ok) {
@@ -1490,7 +1679,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         result.updatesDownloaded = static_cast<int>(downloaded);
 
         if (rebootRequired) {
-            notify(Phase::RebootRequired, L"Restarting to continue installing updates...");
+            notify(Phase::RebootRequired, L"A reiniciar para continuar a instalar atualizações...");
             log(L"Restart required. Windows will reboot shortly...");
             result.success = true;
             result.rebootRequired = true;
@@ -1499,7 +1688,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
         }
 
         if (installed > 0) {
-            notify(Phase::CheckingAgain, L"Checking for more updates...");
+            notify(Phase::CheckingAgain, L"A procurar mais atualizações...");
             log(L"Checking for more updates...");
             result.success = true;
             result.hadFailures = failed > 0;
@@ -1510,10 +1699,10 @@ UpdateEngine::Result UpdateEngine::runCycle() {
             return result;
         }
 
-        // Only antivirus updates were left (now or in an earlier cycle) — done.
+        // Only antivirus updates were left and they could not be applied — done.
         if (avSeen > 0 && failed == 0) {
-            notify(Phase::UpToDate, L"This computer is up to date.");
-            log(L"Remaining updates are antivirus definitions (skipped).");
+            notify(Phase::UpToDate, L"Este computador está atualizado.");
+            log(L"Remaining updates are antivirus updates handled by Windows Security.");
             result.success = true;
             result.upToDate = true;
             return result;
@@ -1521,7 +1710,7 @@ UpdateEngine::Result UpdateEngine::runCycle() {
 
         // Everything left was blocked by helpers\update_filter.txt.
         if (skipped > 0 && failed == 0 && installed == 0) {
-            notify(Phase::UpToDate, L"This computer is up to date.");
+            notify(Phase::UpToDate, L"Este computador está atualizado.");
             log(L"Remaining updates were blocked by the update filter.");
             result.success = true;
             result.upToDate = true;

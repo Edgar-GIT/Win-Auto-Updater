@@ -1,4 +1,9 @@
-"""Active-wait replay: UIA first, relative coordinates fallback, hotkeys via PyAutoGUI."""
+"""Active-wait replay: relative coordinates first, UIA fallback, hotkeys via PyAutoGUI.
+
+Pacing: a short speed-dependent gap between actions, then an *active* wait for
+the target window to exist and be ready (see speed.py). Recorded delays are not
+replayed, apart from a small allowance after unusually long recorded pauses.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,15 @@ from typing import Callable
 import pyautogui
 
 from .schema import MacroDocument, Step, load_macro
-from .windows_util import activate_window, find_window, invoke_uia, window_rect
+from .speed import ReplayTiming, timing_for_factor
+from .windows_util import (
+    activate_window,
+    find_window,
+    find_window_timed,
+    invoke_uia,
+    wait_window_ready,
+    window_rect,
+)
 
 LogFn = Callable[[str], None]
 
@@ -17,10 +30,23 @@ LogFn = Callable[[str], None]
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.02
 
-# Extra settle time added on top of every recorded inter-step delay (lag / slower PCs).
-DEFAULT_PAD_MS = 4000
-# After the timed wait, how long to keep hunting the target window.
-DEFAULT_WINDOW_TIMEOUT_S = 15.0
+# Pacing used when no speed probe result is supplied (mid-range PC).
+DEFAULT_TIMING = timing_for_factor(1.0, "default timing (factor 1.00)")
+DEFAULT_WINDOW_TIMEOUT_S = DEFAULT_TIMING.timeout_s
+
+# A recorded pause longer than this suggests the operator waited for something
+# that cannot be observed from outside (content loading inside a window); a
+# fraction of the excess is kept, capped, instead of the whole recorded delay.
+LONG_PAUSE_MS = 4000
+LONG_PAUSE_BONUS_CAP_MS = 2000
+
+
+def recorded_bonus_ms(dt_ms: int, factor: float) -> int:
+    excess = int(dt_ms) - LONG_PAUSE_MS
+    if excess <= 0:
+        return 0
+    scale = max(0.6, min(1.5, factor))
+    return int(min(LONG_PAUSE_BONUS_CAP_MS, excess * 0.5) * scale)
 
 
 class ReplayReport:
@@ -182,6 +208,7 @@ def play_step(
     index: int,
     total: int,
     window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
+    timing: ReplayTiming = DEFAULT_TIMING,
     on_fail: str = "continue",  # abort | continue
     prefer_coords: bool = True,
     log: LogFn | None = None,
@@ -192,8 +219,8 @@ def play_step(
 
     optional = is_optional_dialog(step)
     # Optional OOM/error boxes: short wait — they either pop quickly or never.
-    timeout = min(window_timeout_s, 4.0) if optional else window_timeout_s
-    hwnd = find_window(step.window, timeout_s=timeout)
+    timeout = min(window_timeout_s, 1.5 + timing.gap_ms / 1000.0) if optional else window_timeout_s
+    hwnd, waited = find_window_timed(step.window, timeout_s=timeout)
     if not hwnd:
         if optional:
             _log(
@@ -205,18 +232,37 @@ def play_step(
         msg = (
             f"FAIL step {index}: window not found "
             f"(proc={step.window.process!r} class={step.window.class_name!r} "
-            f"title={step.window.title!r}) after {timeout:.0f}s"
+            f"title={step.window.title!r}) after {waited:.1f}s"
         )
         _log(log, msg)
         return "fail"
 
     activate_window(hwnd)
-    time.sleep(0.08)
+    time.sleep(0.06)
     import win32gui
 
     if win32gui.GetForegroundWindow() != hwnd:
         activate_window(hwnd)
-        time.sleep(0.08)
+        time.sleep(0.06)
+
+    # Active wait: click as soon as the window can take it, however long (or
+    # short) that is on this PC, instead of sleeping a fixed worst-case time.
+    ready, ready_wait, latency = wait_window_ready(hwnd, timeout_s=timing.ready_timeout_s)
+    settle_ms = 0
+    if waited > 0.25:
+        # The window only just appeared — let it finish painting its controls.
+        settle_ms += timing.settle_ms
+    if latency > 0.08:
+        # Sluggish message loop (stress tests already running): be more patient.
+        settle_ms += int(min(1500.0, latency * 4000.0))
+    if settle_ms:
+        time.sleep(settle_ms / 1000.0)
+    _log(
+        log,
+        f"  window {'ready' if ready else 'NOT ready (clicking anyway)'}: "
+        f"appeared after {waited:.2f}s, ready after {ready_wait:.2f}s, "
+        f"latency {latency * 1000.0:.0f}ms, settle {settle_ms}ms",
+    )
 
     if step.type == "click":
         # Cross-DPI: prefer normalized (nx,ny) = fraction of window size.
@@ -281,9 +327,7 @@ def play_step(
 def play_document(
     doc: MacroDocument,
     *,
-    window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
-    pad_ms: int = DEFAULT_PAD_MS,
-    gap_scale: float = 1.0,
+    timing: ReplayTiming = DEFAULT_TIMING,
     on_fail: str = "continue",
     log: LogFn | None = None,
 ) -> ReplayReport:
@@ -293,59 +337,70 @@ def play_document(
         _log(log, "No steps in macro - nothing to replay.")
         return report
 
-    scale = max(0.2, float(gap_scale))
     _log(
         log,
-        f"Replaying {report.total} step(s): recorded×{scale:.2f} + pad {pad_ms}ms each, "
-        f"window timeout={window_timeout_s:.0f}s, on-fail={on_fail}",
+        f"Replaying {report.total} step(s): gap {timing.gap_ms}ms between actions + active "
+        f"window wait (timeout {timing.timeout_s:.0f}s), on-fail={on_fail}",
     )
+    started = time.monotonic()
+    last_action = started
+    # Windows that were not found: later steps for the same window fail fast
+    # instead of burning the full timeout again (e.g. a tool that never opened).
+    missing: set[tuple[str, str, str]] = set()
+
     for i, step in enumerate(doc.steps, start=1):
-        # Scale recorded gaps for PC speed, then add a small settle pad.
-        # Optional dialogs (MemTest OOM): keep wait short — often absent.
-        scaled = int(max(0, int(step.dt_ms)) * scale)
-        wait_ms = scaled + max(0, int(pad_ms))
-        if is_optional_dialog(step):
-            wait_ms = min(wait_ms, 2500)
-        if wait_ms > 0:
+        gap_ms = timing.gap_ms
+        if not is_optional_dialog(step):
+            gap_ms += recorded_bonus_ms(step.dt_ms, timing.factor)
+        remaining = gap_ms / 1000.0 - (time.monotonic() - last_action)
+        if remaining > 0:
             _log(
                 log,
-                f"  wait {wait_ms / 1000.0:.1f}s "
-                f"(recorded {step.dt_ms}ms ×{scale:.2f} = {scaled}ms + pad {pad_ms}ms) "
+                f"  pace {remaining:.2f}s (gap {gap_ms}ms; recorded pause was {step.dt_ms}ms) "
                 f"before step {i}",
             )
-            time.sleep(wait_ms / 1000.0)
+            time.sleep(remaining)
+
+        key = (
+            step.window.process.lower(),
+            step.window.class_name.lower(),
+            step.window.title.strip().lower(),
+        )
+        timeout_s = min(timing.timeout_s, 2.5) if key in missing else timing.timeout_s
 
         result = play_step(
             step,
             index=i,
             total=report.total,
-            window_timeout_s=window_timeout_s,
+            window_timeout_s=timeout_s,
+            timing=timing,
             on_fail=on_fail,
             prefer_coords=True,
             log=log,
         )
+        last_action = time.monotonic()
         if result == "ok":
             report.ok += 1
+            missing.discard(key)
         elif result == "skip":
             report.skipped += 1
         else:
             report.failed += 1
+            missing.add(key)
             report.errors.append(f"step {i}: {step.summary()}")
             if on_fail == "abort":
                 _log(log, "Aborting replay after failure.")
                 break
             _log(log, "Continuing after failure (--on-fail continue).")
 
-    _log(log, report.summary())
+    _log(log, report.summary() + f" in {time.monotonic() - started:.1f}s")
     return report
 
 
 def play_file(
     path: Path,
     *,
-    window_timeout_s: float = DEFAULT_WINDOW_TIMEOUT_S,
-    pad_ms: int = DEFAULT_PAD_MS,
-    gap_scale: float = 1.0,
+    timing: ReplayTiming = DEFAULT_TIMING,
     on_fail: str = "continue",
     log: LogFn | None = None,
 ) -> ReplayReport:
@@ -362,14 +417,7 @@ def play_file(
             f"WARNING: {missing_norm} click(s) lack size/norm data - DPI scale "
             f"will NOT be applied (re-record once for 100%/150% portability).",
         )
-    return play_document(
-        doc,
-        window_timeout_s=window_timeout_s,
-        pad_ms=pad_ms,
-        gap_scale=gap_scale,
-        on_fail=on_fail,
-        log=log,
-    )
+    return play_document(doc, timing=timing, on_fail=on_fail, log=log)
 
 
 def enrich_macro_sizes(
@@ -450,6 +498,6 @@ def launch_stress_tools(log: LogFn | None = None) -> int:
         except Exception as exc:
             _log(log, f"Failed to launch {label}: {exc}")
     if launched:
-        _log(log, "Waiting 4s for windows to appear...")
-        time.sleep(4.0)
+        # No long fixed sleep: replay waits for each window as it needs it.
+        time.sleep(1.0)
     return launched

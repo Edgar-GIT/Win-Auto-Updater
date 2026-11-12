@@ -92,8 +92,15 @@ Exit code: `0` = sucesso, `≠0` = falha (o C++ usa isto).
 - **Cliques**: botão L/R + `rel_x`/`rel_y` ao canto superior esquerdo da janela top-level +
   identidade (`process`, `class_name`, `title`) + UIA opcional + monitor/DPI.
 - **Teclas**: `vk` + nome amigável + modificadores; a janela alvo é a foreground no momento.
-- `dt_ms` é só diagnóstico — o replay **não** depende de tempos gravados; espera ativamente
-  pela janela (timeout default 60 s).
+- `dt_ms` é só diagnóstico — o replay **não** reproduz os tempos gravados. Ritmo:
+  1. intervalo mínimo entre ações (`gap`), escolhido por uma sonda de CPU de ~25 ms
+     (`speed.py`): ≈0,7 s num PC rápido, 1 s num médio, ≈1,25 s num Core i3 antigo, 2 s no
+     limite; `--gap-seconds N` (ou `MacroGapMs` no `stress.ini`) força um valor;
+  2. espera ativa até a janela alvo existir, estar ativa/habilitada, responder a mensagens e
+     ter parado de se mexer (`wait_window_ready`) — um PC lento espera mais, um rápido não;
+  3. pausas gravadas muito longas (> 4 s) deixam um pequeno bónus (máx. 2 s);
+  4. janela em falta: timeout 10–25 s na primeira vez, 2,5 s nos passos seguintes para a
+     mesma janela.
 - Não há compatibilidade com o antigo `macro.txt` — regrava a macro.
 
 Ruído ignorado na gravação: `explorer.exe`, `cmd.exe`, `powershell.exe`, `conhost.exe`,
@@ -127,7 +134,7 @@ A GUI fica *topmost*, não grava cliques sobre si própria, e o F10 é consumido
 
 1. Resolução máxima (já feita pelo app).
 2. Lança as 5 tools (FurMark, Prime95, CDM, powerMAX, MemTest).
-3. Espera 4 s.
+3. Espera 0,5 s (o replay espera ativamente por cada janela).
 4. Corre `MacroHelper.exe --play "<pasta>\macro.json"`.
 5. Por cada passo: espera a janela → ativa → UIA se existir → senão coordenadas relativas.
 6. Log no stdout (capturado pelo SingleUpdate) e em `macro.json.log`.

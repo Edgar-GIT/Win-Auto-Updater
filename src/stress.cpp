@@ -492,6 +492,8 @@ Config loadConfig(const std::filesystem::path& executable) {
             out << L"MacroEngine=python\n";
             out << L"; Macro file (relative paths resolve under helpers\\).\n";
             out << L"MacroFile=macro.json\n";
+            out << L"; Minimum ms between macro clicks. 0 = automatic (by PC speed, ~700-2000).\n";
+            out << L"MacroGapMs=0\n";
         }
         return config;
     }
@@ -550,6 +552,7 @@ Config loadConfig(const std::filesystem::path& executable) {
         else if (key == L"usemacro") config.useMacro = parseBool(value, config.useMacro);
         else if (key == L"macroengine") config.macroEngine = value;
         else if (key == L"macrofile") config.macroFile = value;
+        else if (key == L"macrogapms") config.macroGapMs = parseInt(value, config.macroGapMs);
         else if (key == L"autorunstress") config.autoRunStress = parseBool(value, config.autoRunStress);
     }
     return config;
@@ -788,8 +791,9 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
         return result;
     }
 
-    // Extra settle time before the macro starts clicking (FurMark can be slow).
-    Sleep(2500);
+    // No long fixed settle here any more: MacroHelper waits for each target
+    // window to exist and be ready before it clicks (active wait).
+    Sleep(500);
 
     std::error_code ec;
     const auto exe = currentExecutable();
@@ -811,8 +815,13 @@ Result run(const Config& config, const Callbacks& callbacks, bool playMacro) {
             std::filesystem::create_directories(outLog.parent_path(), ec);
             DeleteFileW(outLog.wstring().c_str());
             // continue: MemTest OOM dialog / closed windows must not abort CDM/Prime/FurMark.
-            const std::wstring args =
+            std::wstring args =
                 L"--play " + quote(macroFile.wstring()) + L" --on-fail continue";
+            if (config.macroGapMs > 0) {
+                wchar_t gap[32]{};
+                swprintf(gap, 32, L" --gap-seconds %.3f", config.macroGapMs / 1000.0);
+                args += gap;
+            }
             DWORD exitCode = 1;
             if (!launchProcess(helper.wstring(), args, helper.parent_path(), true, true, outLog,
                                &exitCode)) {

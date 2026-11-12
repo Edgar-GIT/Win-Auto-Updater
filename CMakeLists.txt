@@ -24,12 +24,21 @@ add_executable(SingleUpdate WIN32
     src/stress.cpp
     src/macro.cpp
     src/ui.cpp
+    # Native test bench (beta) — self-contained, see native_tests/README.md
+    native_tests/nt_core.cpp
+    native_tests/ram_test.cpp
+    native_tests/cpu_burner.cpp
+    native_tests/disk_test.cpp
+    native_tests/gpu_test.cpp
+    native_tests/bench_window.cpp
+    native_tests/nt_dev.cpp
     resources/app.rc
 )
 
 target_include_directories(SingleUpdate PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/resources
+    ${CMAKE_SOURCE_DIR}/native_tests
 )
 
 set_source_files_properties(resources/app.rc PROPERTIES
@@ -76,6 +85,9 @@ target_link_libraries(SingleUpdate PRIVATE
     secur32
     dwmapi
     gdiplus
+    d3d11
+    dxgi
+    powrprof
 )
 
 # Developer aid: "SingleUpdate.exe --ui-snapshot <dir>" renders every screen to PNG.

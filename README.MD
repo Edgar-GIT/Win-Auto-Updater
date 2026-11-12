@@ -151,6 +151,17 @@ Set `MacroEngine=cpp` for the legacy in-process recorder (`macro.txt`).
 
 ---
 
+## Native tests (beta)
+
+The **Testes nativos** button opens the app's own test bench — RAM test, CPU burner,
+disk benchmark with data verification and a Direct3D 11 GPU burner/benchmark — with no
+external tools and no macro. It is the same executable started as a second process
+(`SingleUpdate.exe --native-tests`), and all of its code lives in
+[`native_tests/`](native_tests/README.md), so it cannot interfere with the updater or
+with the macro-driven bench above.
+
+---
+
 ## License
 
 See [LICENSE](LICENSE).

@@ -152,6 +152,7 @@ const wchar_t* kGuideText =
     L"  Ferramentas: helpers\\programas de teste\r\n"
     L"  1. Gravar macro → Abrir ferramentas → clicar → F10\r\n"
     L"  2. Testes automáticos — stress + replay da macro\r\n"
+    L"  • Testes nativos (beta) — RAM, CPU, disco e gráfica sem ferramentas externas\r\n"
     L"  • Sensores — OpenHardwareMonitor (+ BatteryCare)\r\n"
     L"\r\n"
     L"Filtro: helpers\\update_filter.txt (passa entre PCs com a pasta helpers).\r\n"
@@ -538,8 +539,10 @@ void App::initWidgets() {
         ButtonStyle::Accent, Icon::Play);
     add(IDC_OPEN_TOOLS, L"Abrir ferramentas", L"Sem macro", ButtonStyle::Glass, Icon::Grid);
     add(IDC_MONITOR, L"Sensores", L"Temperaturas", ButtonStyle::Glass, Icon::Pulse);
-    add(IDC_RECORD_MACRO, L"Gravar macro", L"MacroHelper · F10 para parar", ButtonStyle::Glass,
-        Icon::Record);
+    add(IDC_RECORD_MACRO, L"Gravar macro", L"MacroHelper · F10", ButtonStyle::Glass, Icon::Record);
+    // Native bench (beta): our own RAM / CPU / disk / GPU tests, in their own window.
+    add(IDC_NATIVE_TESTS, L"Testes nativos", L"Beta · bancada própria", ButtonStyle::Glass,
+        Icon::Chip);
     add(IDC_REOPEN_TOGGLE, L"Reabrir após reinício", L"", ButtonStyle::Glass, Icon::None, true);
     add(IDC_RETRY, L"Tentar novamente", L"", ButtonStyle::Primary, Icon::Retry);
     add(IDC_GUIDE, L"Guia", L"", ButtonStyle::Ghost, Icon::Info);
@@ -809,7 +812,8 @@ void App::layoutHome(int top, int bottom) {
         place(IDC_OPEN_TOOLS, x, y, half, midH);
         place(IDC_MONITOR, x + half + colGap, y, w - half - colGap, midH);
         y += midH + rowGap;
-        place(IDC_RECORD_MACRO, x, y, w, smallH);
+        place(IDC_RECORD_MACRO, x, y, half, smallH);
+        place(IDC_NATIVE_TESTS, x + half + colGap, y, w - half - colGap, smallH);
         y += smallH + rowGap;
         chipsRect_ = RECT{x, y, x + w, y + smallH};
     }
@@ -868,10 +872,11 @@ void App::layoutDone(int top, int bottom) {
     const int actionsY = bottom - actionsH;
     const int fullW = clientW_ - margin * 2;
     if (doneSuccess_) {
-        const int w = (fullW - gap * 2) / 3;
+        const int w = (fullW - gap * 3) / 4;
         place(IDC_OPEN_TOOLS, margin, actionsY, w, actionsH);
         place(IDC_RUN_TESTS, margin + w + gap, actionsY, w, actionsH);
-        place(IDC_MONITOR, margin + (w + gap) * 2, actionsY, fullW - (w + gap) * 2, actionsH);
+        place(IDC_NATIVE_TESTS, margin + (w + gap) * 2, actionsY, w, actionsH);
+        place(IDC_MONITOR, margin + (w + gap) * 3, actionsY, fullW - (w + gap) * 3, actionsH);
         const Widget* close = widget(IDC_CLOSE);
         if (close != nullptr) {
             place(IDC_REOPEN_TOGGLE, margin, close->rc.top, px(290.0f),
@@ -1587,6 +1592,20 @@ void App::launchMonitorTools() {
         launch(L"BatteryCare", base / L"batterycare" / L"BatteryCare.exe");
     }
     applyHint(summary);
+}
+
+// "Testes nativos" (beta): the bench lives in native_tests/ and runs as a second
+// process of this same executable, so nothing it does (a GPU driver reset, most
+// of the RAM under test) can disturb the updater or the macro workflow.
+void App::launchNativeTests() {
+    std::wstring error;
+    if (!launchDetached(currentExecutable(), L"--native-tests", &error)) {
+        MessageBoxW(hwnd_, (L"Não foi possível abrir os testes nativos.\r\n\r\n" + error).c_str(),
+                    kAppTitle, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    appendLog(L"Testes nativos (beta) abertos numa janela à parte.");
+    applyHint(L"Testes nativos (beta) abertos numa janela à parte — RAM, CPU, disco e gráfica.");
 }
 
 void App::toggleRecording() {
@@ -2662,6 +2681,9 @@ void App::onCommand(int id) {
             break;
         case IDC_MONITOR:
             launchMonitorTools();
+            break;
+        case IDC_NATIVE_TESTS:
+            launchNativeTests();
             break;
         case IDC_OPEN_TOOLS:
             openTestTools();

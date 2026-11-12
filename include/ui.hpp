@@ -121,6 +121,10 @@ inline RectF toRectF(const RECT& r) {
 class Canvas {
 public:
     Canvas(HDC hdc, float scale);
+    // Draws into a GDI+ bitmap. transparentTarget = the bitmap has an alpha
+    // channel that must stay meaningful (overlays): text is then anti-aliased in
+    // greyscale, because ClearType needs an opaque background.
+    Canvas(Gdiplus::Image* image, float scale, bool transparentTarget);
 
     Gdiplus::Graphics& g() { return g_; }
     float scale() const { return scale_; }

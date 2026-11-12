@@ -345,6 +345,14 @@ Canvas::Canvas(HDC hdc, float scale) : g_(hdc), scale_(scale) {
     g_.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
 }
 
+Canvas::Canvas(Gdiplus::Image* image, float scale, bool transparentTarget)
+    : g_(image), scale_(scale) {
+    g_.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g_.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    g_.SetTextRenderingHint(transparentTarget ? Gdiplus::TextRenderingHintAntiAliasGridFit
+                                              : Gdiplus::TextRenderingHintClearTypeGridFit);
+}
+
 void Canvas::fillRound(const RectF& r, float radiusDu, Color fill) {
     if (r.Width <= 0.0f || r.Height <= 0.0f) {
         return;

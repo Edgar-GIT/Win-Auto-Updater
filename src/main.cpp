@@ -1,5 +1,7 @@
 #include "../include/app.hpp"
 
+#include "../native_tests/native_tests.hpp"
+
 #include <shellapi.h>
 #include <windows.h>
 
@@ -73,6 +75,49 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return snapshot.runSnapshot(argv[2]);
     }
 #endif
+
+#ifdef SU_UI_SNAPSHOT
+    if (argv != nullptr && argc >= 3 && std::wstring(argv[1]) == L"--native-selftest") {
+        return nt::runNativeSelfTest(argv[2]);
+    }
+    if (argv != nullptr && argc >= 3 && std::wstring(argv[1]) == L"--gpu-snapshot") {
+        return nt::runGpuSnapshot(argv[2]);
+    }
+    if (argv != nullptr && argc >= 3 && std::wstring(argv[1]) == L"--native-snapshot") {
+        return nt::runNativeSnapshot(instance, argv[2]);
+    }
+#endif
+
+    // "--native-tests [--autostart=<minutes>]": the native test bench (beta). It is
+    // its own window in its own process, independent from the updater instance.
+    if (argv != nullptr) {
+        bool nativeTests = false;
+        nt::LaunchOptions nativeOptions;
+        const std::wstring autostart = L"--autostart=";
+        const std::wstring autostartSeconds = L"--autostart-seconds=";
+        for (int i = 1; i < argc; ++i) {
+            const std::wstring arg = argv[i];
+            if (arg == L"--native-tests") {
+                nativeTests = true;
+            } else if (arg.rfind(autostartSeconds, 0) == 0) {
+                try {
+                    nativeOptions.autostartSecondsOverride = std::stod(arg.substr(autostartSeconds.size()));
+                } catch (...) {
+                    nativeOptions.autostartSecondsOverride = 0.0;
+                }
+            } else if (arg.rfind(autostart, 0) == 0) {
+                try {
+                    nativeOptions.autostartMinutes = std::stoi(arg.substr(autostart.size()));
+                } catch (...) {
+                    nativeOptions.autostartMinutes = 0;
+                }
+            }
+        }
+        if (nativeTests) {
+            LocalFree(argv);
+            return nt::runNativeTests(instance, nativeOptions);
+        }
+    }
 
     if (argv != nullptr) {
         waitForPreviousInstance(argc, argv);

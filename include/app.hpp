@@ -214,6 +214,7 @@ private:
     void runStressTests();
     void openTestTools();
     void launchMonitorTools();
+    void launchNativeTests();
     void toggleRecording();
     void finishRecording();
     void applyHint(const std::wstring& hint);

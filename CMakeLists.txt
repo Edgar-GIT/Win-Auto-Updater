@@ -30,7 +30,15 @@ add_executable(SingleUpdate WIN32
     native_tests/cpu_burner.cpp
     native_tests/disk_test.cpp
     native_tests/gpu_test.cpp
-    native_tests/bench_window.cpp
+    native_tests/battery.cpp
+    native_tests/sensors.cpp
+    native_tests/bench.cpp
+    native_tests/panel.cpp
+    native_tests/cards.cpp
+    native_tests/monitor_bar.cpp
+    native_tests/dash_window.cpp
+    native_tests/tool_window.cpp
+    native_tests/native_tests.cpp
     native_tests/nt_dev.cpp
     resources/app.rc
 )
@@ -88,6 +96,8 @@ target_link_libraries(SingleUpdate PRIVATE
     d3d11
     dxgi
     powrprof
+    pdh
+    setupapi
 )
 
 # Developer aid: "SingleUpdate.exe --ui-snapshot <dir>" renders every screen to PNG.

@@ -485,7 +485,9 @@ Config loadConfig(const std::filesystem::path& executable) {
             out << L"; Tools live in helpers\\programas de teste. Macro/MacroHelper/\n";
             out << L"; stress.ini / uia_stress.ps1 also live under helpers\\.\n\n";
             out << L"; Run the test bench automatically after a successful update.\n";
-            out << L"AutoRunStress=1\n\n";
+            out << L"AutoRunStress=1\n";
+            out << L"; Which bench: 0 = tools + macro (default), 1 = native tests (automatic).\n";
+            out << L"NativeTests=0\n\n";
             out << L"; Replay the recorded macro (MacroHelper / Macro::play) after launch.\n";
             out << L"UseMacro=1\n";
             out << L"; Macro engine: python (MacroHelper.exe + macro.json) or cpp (legacy).\n";
@@ -554,6 +556,7 @@ Config loadConfig(const std::filesystem::path& executable) {
         else if (key == L"macrofile") config.macroFile = value;
         else if (key == L"macrogapms") config.macroGapMs = parseInt(value, config.macroGapMs);
         else if (key == L"autorunstress") config.autoRunStress = parseBool(value, config.autoRunStress);
+        else if (key == L"nativetests") config.nativeTests = parseBool(value, config.nativeTests);
     }
     return config;
 }

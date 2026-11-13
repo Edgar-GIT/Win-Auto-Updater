@@ -3,11 +3,12 @@
 #include "gpu_shaders.hpp"
 
 #include "com_ptr.hpp"
-#include "ui.hpp"  // GDI+ (PNG snapshots)
+#include "display.hpp"  // highest display resolution (shared with the macro workflow)
+#include "ui.hpp"       // GDI+ (PNG snapshots)
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <dxgi.h>
+#include <dxgi1_6.h>
 
 #include <algorithm>
 #include <cmath>
@@ -23,13 +24,12 @@ namespace nt {
 
 namespace {
 
-constexpr int kBenchWidth = 1280;
-constexpr int kBenchHeight = 720;
-constexpr float kBenchQuality = 0.70f;
-constexpr float kBurnQuality = 0.75f;
+constexpr float kSceneQuality = 0.75f;
 // The scene pass is drawn in horizontal bands: no single draw call can keep a
 // weak GPU busy long enough to trip Windows' 2-second driver watchdog (TDR).
-constexpr int kStrips = 6;
+// The number of bands grows with the frame time (see stripsFor).
+constexpr int kMinStrips = 6;
+constexpr int kMaxStrips = 160;
 constexpr const wchar_t* kWindowClass = L"WinAutoUpdaterVoidBurner";
 
 struct FrameConstants {
@@ -156,6 +156,37 @@ bool compileShader(const char* source, const char* entry, const char* target, st
 }
 
 // ---------------------------------------------------------------------------
+// Adapter choice
+// ---------------------------------------------------------------------------
+
+bool isSoftwareAdapter(const DXGI_ADAPTER_DESC1& desc) {
+    return (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 || (desc.VendorId == 0x1414 && desc.DeviceId == 0x8c);
+}
+
+// The graphics card to test: on hybrid laptops the dedicated one (Windows 10
+// 1803+ can tell which that is), otherwise the primary adapter.
+ComPtr<IDXGIAdapter1> chooseAdapter(DXGI_ADAPTER_DESC1* desc) {
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), asVoid(factory))) || !factory) {
+        return {};
+    }
+    ComPtr<IDXGIAdapter1> adapter;
+    ComPtr<IDXGIFactory6> factory6;
+    if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory6), asVoid(factory6))) && factory6) {
+        if (SUCCEEDED(factory6->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                           __uuidof(IDXGIAdapter1), asVoid(adapter))) &&
+            adapter && SUCCEEDED(adapter->GetDesc1(desc)) && !isSoftwareAdapter(*desc)) {
+            return adapter;
+        }
+        adapter.reset();
+    }
+    if (SUCCEEDED(factory->EnumAdapters1(0, adapter.put())) && adapter && SUCCEEDED(adapter->GetDesc1(desc))) {
+        return adapter;
+    }
+    return {};
+}
+
+// ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
 
@@ -170,19 +201,11 @@ struct Renderer {
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> psScene;
     ComPtr<ID3D11PixelShader> psBlit;
-    ComPtr<ID3D11PixelShader> psHud;
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11SamplerState> sampler;
-    ComPtr<ID3D11BlendState> blendAlpha;
     ComPtr<ID3D11RasterizerState> raster;
-    ComPtr<ID3D11Texture2D> hudTex;
-    ComPtr<ID3D11ShaderResourceView> hudSrv;
-    int hudW = 0;
-    int hudH = 0;
-    int width = 0;   // back buffer
+    int width = 0;  // back buffer = scene texture
     int height = 0;
-    int sceneW = 0;  // scene texture
-    int sceneH = 0;
     bool fallbackShader = false;
     std::wstring adapterName;
     uint64_t vramBytes = 0;
@@ -192,13 +215,9 @@ struct Renderer {
         if (ctx) {
             ctx->ClearState();
         }
-        hudSrv.reset();
-        hudTex.reset();
         raster.reset();
-        blendAlpha.reset();
         sampler.reset();
         constants.reset();
-        psHud.reset();
         psBlit.reset();
         psScene.reset();
         vs.reset();
@@ -209,7 +228,6 @@ struct Renderer {
         swap.reset();
         ctx.reset();
         device.reset();
-        hudW = hudH = 0;
     }
 
     bool fail(std::wstring* error, const wchar_t* what, HRESULT hr) {
@@ -221,30 +239,42 @@ struct Renderer {
         return false;
     }
 
-    // hwnd == nullptr → off-screen device (snapshots).
-    bool init(HWND hwnd, int w, int h, std::wstring* error) {
-        release();
+    HRESULT createDevice(IDXGIAdapter* adapter, HWND hwnd, int w, int h) {
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                             D3D_FEATURE_LEVEL_10_0};
         D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
-        HRESULT hr = E_FAIL;
-        if (hwnd != nullptr) {
-            DXGI_SWAP_CHAIN_DESC desc{};
-            desc.BufferCount = 1;
-            desc.BufferDesc.Width = static_cast<UINT>(w);
-            desc.BufferDesc.Height = static_cast<UINT>(h);
-            desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-            desc.OutputWindow = hwnd;
-            desc.SampleDesc.Count = 1;
-            desc.Windowed = TRUE;
-            desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-            hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 3,
-                                               D3D11_SDK_VERSION, &desc, swap.put(), device.put(), &level,
-                                               ctx.put());
-        } else {
-            hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 3,
-                                   D3D11_SDK_VERSION, device.put(), &level, ctx.put());
+        // An explicit adapter must be paired with the "unknown" driver type.
+        const D3D_DRIVER_TYPE type = adapter != nullptr ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+        swap.reset();
+        device.reset();
+        ctx.reset();
+        if (hwnd == nullptr) {
+            return D3D11CreateDevice(adapter, type, nullptr, 0, levels, 3, D3D11_SDK_VERSION, device.put(),
+                                     &level, ctx.put());
+        }
+        DXGI_SWAP_CHAIN_DESC desc{};
+        desc.BufferCount = 1;
+        desc.BufferDesc.Width = static_cast<UINT>(w);
+        desc.BufferDesc.Height = static_cast<UINT>(h);
+        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.OutputWindow = hwnd;
+        desc.SampleDesc.Count = 1;
+        desc.Windowed = TRUE;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        return D3D11CreateDeviceAndSwapChain(adapter, type, nullptr, 0, levels, 3, D3D11_SDK_VERSION, &desc,
+                                             swap.put(), device.put(), &level, ctx.put());
+    }
+
+    // hwnd == nullptr → off-screen device (snapshots).
+    bool init(HWND hwnd, int w, int h, std::wstring* error) {
+        release();
+        DXGI_ADAPTER_DESC1 chosenDesc{};
+        ComPtr<IDXGIAdapter1> chosen = chooseAdapter(&chosenDesc);
+        HRESULT hr = createDevice(chosen.get(), hwnd, w, h);
+        if ((FAILED(hr) || !device || !ctx) && chosen) {
+            logLine(L"[GPU] Placa preferida recusada (" + hresultText(hr) + L") — a usar a principal.");
+            hr = createDevice(nullptr, hwnd, w, h);
         }
         if (FAILED(hr) || !device || !ctx) {
             return fail(error, L"Esta placa gráfica não suporta Direct3D 10/11", hr);
@@ -292,8 +322,7 @@ struct Renderer {
         device->CreateVertexShader(bytecode::kVertex, sizeof(bytecode::kVertex), nullptr, vs.put());
         createPixelShader(bytecode::kScene, sizeof(bytecode::kScene), psScene);
         createPixelShader(bytecode::kBlit, sizeof(bytecode::kBlit), psBlit);
-        createPixelShader(bytecode::kHud, sizeof(bytecode::kHud), psHud);
-        if (vs && psScene && psBlit && psHud) {
+        if (vs && psScene && psBlit) {
             return true;
         }
         logLine(L"[GPU] Bytecode embutido rejeitado — a compilar os shaders nesta máquina.");
@@ -309,12 +338,6 @@ struct Renderer {
             if (!compileShader(kGpuShaderSource, "PSBlit", "ps_4_0", &blob, error) ||
                 !createPixelShader(blob.data(), blob.size(), psBlit)) {
                 return fail(error, L"Não foi possível criar o shader de apresentação", E_FAIL);
-            }
-        }
-        if (!psHud) {
-            if (!compileShader(kGpuShaderSource, "PSHud", "ps_4_0", &blob, error) ||
-                !createPixelShader(blob.data(), blob.size(), psHud)) {
-                return fail(error, L"Não foi possível criar o shader do painel", E_FAIL);
             }
         }
         if (!psScene) {
@@ -360,21 +383,6 @@ struct Renderer {
             return fail(error, L"CreateSamplerState falhou", hr);
         }
 
-        // Premultiplied alpha for the HUD overlay.
-        D3D11_BLEND_DESC blendDesc{};
-        blendDesc.RenderTarget[0].BlendEnable = TRUE;
-        blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-        blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-        blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-        blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-        blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-        blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-        blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-        hr = device->CreateBlendState(&blendDesc, blendAlpha.put());
-        if (FAILED(hr)) {
-            return fail(error, L"CreateBlendState falhou", hr);
-        }
-
         D3D11_RASTERIZER_DESC rasterDesc{};
         rasterDesc.FillMode = D3D11_FILL_SOLID;
         rasterDesc.CullMode = D3D11_CULL_NONE;
@@ -407,13 +415,11 @@ struct Renderer {
             }
         }
 
-        // The scene texture is at least benchmark-sized; a sub-rectangle of it is
-        // rendered when the internal resolution is lower than the output.
-        sceneW = swap ? std::max(width, kBenchWidth) : width;
-        sceneH = swap ? std::max(height, kBenchHeight) : height;
+        // The scene is rendered into its own texture at the full output
+        // resolution and copied to the back buffer.
         D3D11_TEXTURE2D_DESC desc{};
-        desc.Width = static_cast<UINT>(sceneW);
-        desc.Height = static_cast<UINT>(sceneH);
+        desc.Width = static_cast<UINT>(width);
+        desc.Height = static_cast<UINT>(height);
         desc.MipLevels = 1;
         desc.ArraySize = 1;
         desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -466,32 +472,30 @@ struct Renderer {
         ctx->RSSetState(raster.get());
     }
 
-    void setViewport(int x, int y, int w, int h) {
+    void setViewport(int w, int h) {
         D3D11_VIEWPORT viewport{};
-        viewport.TopLeftX = static_cast<float>(x);
-        viewport.TopLeftY = static_cast<float>(y);
         viewport.Width = static_cast<float>(w);
         viewport.Height = static_cast<float>(h);
         viewport.MaxDepth = 1.0f;
         ctx->RSSetViewports(1, &viewport);
     }
 
-    // Ray-marches the scene into the top-left renderW × renderH of the scene texture.
-    void renderScene(float time, float quality, int renderW, int renderH) {
-        renderW = std::clamp(renderW, 16, sceneW);
-        renderH = std::clamp(renderH, 16, sceneH);
+    // Ray-marches the scene at the full resolution, in `strips` horizontal
+    // bands. flushEachStrip submits every band to the GPU on its own, so a slow
+    // card always has a short piece of work in front of it.
+    void renderScene(float time, float quality, int strips, bool flushEachStrip) {
         FrameConstants frame{};
-        frame.res[0] = static_cast<float>(renderW);
-        frame.res[1] = static_cast<float>(renderH);
-        frame.res[2] = 1.0f / static_cast<float>(renderW);
-        frame.res[3] = 1.0f / static_cast<float>(renderH);
+        frame.res[0] = static_cast<float>(width);
+        frame.res[1] = static_cast<float>(height);
+        frame.res[2] = 1.0f / static_cast<float>(width);
+        frame.res[3] = 1.0f / static_cast<float>(height);
         frame.params[0] = time;
         frame.params[1] = quality;
-        frame.params[2] = static_cast<float>(renderW) / static_cast<float>(renderH);
-        frame.blit[0] = static_cast<float>(renderW) / static_cast<float>(sceneW);
-        frame.blit[1] = static_cast<float>(renderH) / static_cast<float>(sceneH);
-        frame.blit[2] = (static_cast<float>(renderW) - 0.5f) / static_cast<float>(sceneW);
-        frame.blit[3] = (static_cast<float>(renderH) - 0.5f) / static_cast<float>(sceneH);
+        frame.params[2] = static_cast<float>(width) / static_cast<float>(height);
+        frame.blit[0] = 1.0f;
+        frame.blit[1] = 1.0f;
+        frame.blit[2] = 1.0f;
+        frame.blit[3] = 1.0f;
 
         ID3D11ShaderResourceView* noTexture = nullptr;
         ctx->PSSetShaderResources(0, 1, &noTexture);
@@ -500,76 +504,29 @@ struct Renderer {
         bindCommon(frame);
         ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
         ctx->PSSetShader(psScene.get(), nullptr, 0);
-        setViewport(0, 0, renderW, renderH);
-        for (int strip = 0; strip < kStrips; ++strip) {
-            D3D11_RECT rect{0, renderH * strip / kStrips, renderW, renderH * (strip + 1) / kStrips};
+        setViewport(width, height);
+        strips = std::clamp(strips, 1, std::max(1, height / 4));
+        for (int strip = 0; strip < strips; ++strip) {
+            D3D11_RECT rect{0, height * strip / strips, width, height * (strip + 1) / strips};
             ctx->RSSetScissorRects(1, &rect);
             ctx->Draw(3, 0);
+            if (flushEachStrip) {
+                ctx->Flush();
+            }
         }
     }
 
-    // Stretches the scene to the back buffer and draws the HUD on top.
-    void composite(bool drawHud, int hudX, int hudY) {
+    // Copies the scene to the back buffer.
+    void composite() {
         ID3D11RenderTargetView* target = backRtv.get();
         ctx->OMSetRenderTargets(1, &target, nullptr);
-        setViewport(0, 0, width, height);
+        setViewport(width, height);
         D3D11_RECT full{0, 0, width, height};
         ctx->RSSetScissorRects(1, &full);
         ctx->PSSetShader(psBlit.get(), nullptr, 0);
         ID3D11ShaderResourceView* scene = sceneSrv.get();
         ctx->PSSetShaderResources(0, 1, &scene);
         ctx->Draw(3, 0);
-
-        if (drawHud && hudSrv && hudW > 0 && hudH > 0) {
-            setViewport(hudX, hudY, hudW, hudH);
-            ctx->OMSetBlendState(blendAlpha.get(), nullptr, 0xFFFFFFFF);
-            ctx->PSSetShader(psHud.get(), nullptr, 0);
-            ID3D11ShaderResourceView* hud = hudSrv.get();
-            ctx->PSSetShaderResources(0, 1, &hud);
-            ctx->Draw(3, 0);
-            ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-        }
-    }
-
-    void uploadHud(int w, int h, const std::vector<uint8_t>& pixels) {
-        if (w <= 0 || h <= 0 || pixels.size() < static_cast<size_t>(w) * static_cast<size_t>(h) * 4) {
-            hudSrv.reset();
-            hudTex.reset();
-            hudW = hudH = 0;
-            return;
-        }
-        if (!hudTex || w != hudW || h != hudH) {
-            hudSrv.reset();
-            hudTex.reset();
-            D3D11_TEXTURE2D_DESC desc{};
-            desc.Width = static_cast<UINT>(w);
-            desc.Height = static_cast<UINT>(h);
-            desc.MipLevels = 1;
-            desc.ArraySize = 1;
-            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            desc.SampleDesc.Count = 1;
-            desc.Usage = D3D11_USAGE_DYNAMIC;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-            if (FAILED(device->CreateTexture2D(&desc, nullptr, hudTex.put())) || !hudTex ||
-                FAILED(device->CreateShaderResourceView(hudTex.get(), nullptr, hudSrv.put()))) {
-                hudSrv.reset();
-                hudTex.reset();
-                hudW = hudH = 0;
-                return;
-            }
-            hudW = w;
-            hudH = h;
-        }
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(ctx->Map(hudTex.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            const size_t rowBytes = static_cast<size_t>(w) * 4;
-            for (int y = 0; y < h; ++y) {
-                std::memcpy(static_cast<uint8_t*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
-                            pixels.data() + static_cast<size_t>(y) * rowBytes, rowBytes);
-            }
-            ctx->Unmap(hudTex.get(), 0);
-        }
     }
 };
 
@@ -588,35 +545,9 @@ RECT monitorRectFor(HWND anchor) {
     return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 }
 
-RECT workRectFor(HWND anchor) {
-    HMONITOR monitor = MonitorFromWindow(anchor ? anchor : GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
-    MONITORINFO info{};
-    info.cbSize = sizeof(info);
-    if (monitor != nullptr && GetMonitorInfoW(monitor, &info)) {
-        return info.rcWork;
-    }
-    return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
-}
-
-constexpr DWORD kWindowedStyle = WS_OVERLAPPEDWINDOW;
-constexpr DWORD kFullscreenStyle = WS_POPUP;
-
-// Windowed placement: 1280×720 client, shrunk to fit the monitor's work area.
-RECT windowedRect(HWND anchor) {
-    const RECT work = workRectFor(anchor);
-    RECT frame{0, 0, 0, 0};
-    AdjustWindowRectEx(&frame, kWindowedStyle, FALSE, 0);
-    const int frameW = frame.right - frame.left;
-    const int frameH = frame.bottom - frame.top;
-    const int availW = std::max<int>(320, (work.right - work.left) - frameW - 40);
-    const int availH = std::max<int>(180, (work.bottom - work.top) - frameH - 40);
-    const float fit = std::min({1.0f, static_cast<float>(availW) / kBenchWidth,
-                                static_cast<float>(availH) / kBenchHeight});
-    const int w = static_cast<int>(kBenchWidth * fit) + frameW;
-    const int h = static_cast<int>(kBenchHeight * fit) + frameH;
-    const int x = work.left + ((work.right - work.left) - w) / 2;
-    const int y = work.top + ((work.bottom - work.top) - h) / 2;
-    return RECT{x, y, x + w, y + h};
+// More, thinner bands the slower the card is: about 25 ms of work per band.
+int stripsFor(double frameMs) {
+    return std::clamp(static_cast<int>(frameMs / 25.0) + 1, kMinStrips, kMaxStrips);
 }
 
 }  // namespace
@@ -638,37 +569,18 @@ GpuStats GpuTest::stats() const {
     return stats_;
 }
 
-void GpuTest::setHud(int width, int height, std::vector<uint8_t> pixels) {
-    std::lock_guard lock(hudMutex_);
-    hudPixels_ = std::move(pixels);
-    hudWidth_ = width;
-    hudHeight_ = height;
-    ++hudVersion_;
-}
-
-bool GpuTest::queryAdapter(std::wstring* name, uint64_t* vramBytes, bool* software) {
-    ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), asVoid(factory))) || !factory) {
-        return false;
-    }
-    ComPtr<IDXGIAdapter1> adapter;
-    if (FAILED(factory->EnumAdapters1(0, adapter.put())) || !adapter) {
-        return false;
-    }
+bool GpuTest::queryAdapter(GpuAdapter* out) {
     DXGI_ADAPTER_DESC1 desc{};
-    if (FAILED(adapter->GetDesc1(&desc))) {
+    const ComPtr<IDXGIAdapter1> adapter = chooseAdapter(&desc);
+    if (!adapter || out == nullptr) {
         return false;
     }
-    if (name) {
-        *name = desc.Description;
-    }
-    if (vramBytes) {
-        *vramBytes = desc.DedicatedVideoMemory;
-    }
-    if (software) {
-        *software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ||
-                    (desc.VendorId == 0x1414 && desc.DeviceId == 0x8c);
-    }
+    out->name = desc.Description;
+    out->vramBytes = desc.DedicatedVideoMemory;
+    out->sharedBytes = desc.SharedSystemMemory;
+    out->software = isSoftwareAdapter(desc);
+    out->luid = desc.AdapterLuid;
+    out->vendorId = desc.VendorId;
     return true;
 }
 
@@ -681,16 +593,13 @@ bool GpuTest::start(const Options& options) {
     }
     stopRequested_ = false;
     resizePending_ = false;
-    toggleFullscreen_ = false;
-    hudVisible_ = true;
+    closedByUser_ = false;
     history_.clear();
     {
         std::lock_guard lock(mutex_);
         stats_ = GpuStats{};
         stats_.state = State::Starting;
         stats_.message = L"A preparar a cena (na primeira vez compila os shaders, pode demorar)...";
-        stats_.benchmark = options.mode == Mode::Benchmark;
-        stats_.duration = options.mode == Mode::Benchmark ? options.benchmarkSeconds : 0.0;
     }
     thread_ = std::thread([this, options] { run(options); });
     return true;
@@ -720,23 +629,22 @@ LRESULT CALLBACK GpuTest::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     switch (msg) {
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
+                self->closedByUser_ = true;
                 self->stopRequested_ = true;
-            } else if (wParam == VK_F11) {
-                self->toggleFullscreen_ = true;
-            } else if (wParam == 'H') {
-                self->hudVisible_ = !self->hudVisible_.load();
             }
             return 0;
         case WM_SIZE:
+        case WM_DISPLAYCHANGE:
             self->resizePending_ = true;
             return 0;
         case WM_CLOSE:
+            self->closedByUser_ = true;
             self->stopRequested_ = true;
             return 0;
         case WM_ERASEBKGND:
             return 1;
         case WM_SETCURSOR:
-            if (self->fullscreen_ && LOWORD(lParam) == HTCLIENT) {
+            if (LOWORD(lParam) == HTCLIENT) {
                 SetCursor(nullptr);
                 return TRUE;
             }
@@ -748,12 +656,16 @@ LRESULT CALLBACK GpuTest::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 }
 
 void GpuTest::run(Options options) {
-    const bool benchmark = options.mode == Mode::Benchmark;
     HINSTANCE instance = GetModuleHandleW(nullptr);
     HWND hwnd = nullptr;
     Renderer renderer;
+    bool pacing = false;
 
     const auto finish = [&](State state, const std::wstring& message) {
+        if (pacing) {
+            TestClock::instance().setGpuPaced(false);
+            pacing = false;
+        }
         renderer.release();
         if (hwnd != nullptr) {
             DestroyWindow(hwnd);
@@ -764,16 +676,24 @@ void GpuTest::run(Options options) {
             stats_.state = state;
             stats_.message = message;
             stats_.fps = 0.0;
-        }
-        {
-            std::lock_guard lock(hudMutex_);
-            hudPixels_.clear();
-            hudWidth_ = hudHeight_ = 0;
-            ++hudVersion_;
+            stats_.closedByUser = closedByUser_.load();
         }
         logLine(L"[GPU] " + message);
         active_ = false;
     };
+
+    // Always at the highest resolution the screen supports (the same call the
+    // macro workflow makes before it opens FurMark).
+    if (!options.keepDisplayMode) {
+        const RECT before = monitorRectFor(options.placeNear);
+        std::wstring detail;
+        Display::setMaxResolution(&detail);
+        logLine(L"[GPU] Ecrã: " + detail);
+        const RECT after = monitorRectFor(options.placeNear);
+        if (!EqualRect(&before, &after)) {
+            Sleep(800);  // let the desktop settle on the new mode
+        }
+    }
 
     {
         WNDCLASSEXW wc{};
@@ -788,22 +708,18 @@ void GpuTest::run(Options options) {
         RegisterClassExW(&wc);  // fails harmlessly when already registered
     }
 
-    bool fullscreen = options.fullscreen;
-    RECT windowed = windowedRect(options.placeNear);
+    // Borderless window covering the whole monitor: full screen without taking
+    // the display away from the monitor bar, which stays on top of it.
     {
-        const RECT rect = fullscreen ? monitorRectFor(options.placeNear) : windowed;
-        hwnd = CreateWindowExW(WS_EX_APPWINDOW, kWindowClass,
-                               benchmark ? L"Void Burner — benchmark" : L"Void Burner — teste gráfico",
-                               fullscreen ? kFullscreenStyle : kWindowedStyle, rect.left, rect.top,
-                               rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance,
-                               this);
+        const RECT rect = monitorRectFor(options.placeNear);
+        hwnd = CreateWindowExW(WS_EX_APPWINDOW, kWindowClass, L"Void Burner — teste gráfico", WS_POPUP,
+                               rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, nullptr,
+                               nullptr, instance, this);
     }
     if (hwnd == nullptr) {
         finish(State::Unavailable, L"Não foi possível criar a janela do teste gráfico.");
         return;
     }
-    fullscreen_ = fullscreen;
-    ui::applyDarkFrame(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
 
@@ -829,23 +745,24 @@ void GpuTest::run(Options options) {
         stats_.adapter = renderer.adapterName;
         stats_.vramBytes = renderer.vramBytes;
         stats_.fallbackShader = renderer.fallbackShader;
-        stats_.fullscreen = fullscreen;
+        stats_.width = renderer.width;
+        stats_.height = renderer.height;
     }
-    logLine(L"[GPU] " + renderer.adapterName + L" — " + (benchmark ? L"benchmark" : L"burn") +
-            (renderer.fallbackShader ? L" (shader simplificado)." : L"."));
+    logLine(L"[GPU] " + renderer.adapterName + L" — " + std::to_wstring(renderer.width) + L"×" +
+            std::to_wstring(renderer.height) + (renderer.fallbackShader ? L" (shader simplificado)." : L"."));
+
+    TestClock::instance().setGpuPaced(true);
+    pacing = true;
 
     const double started = nowSeconds();
     double windowStart = started;
-    double adaptStart = started;
+    double lastFrame = started;
+    double frameMs = 20.0;  // smoothed, drives the number of bands
     int windowFrames = 0;
-    int adaptFrames = 0;
     uint64_t frames = 0;
     double minFps = 0.0;
     double maxFps = 0.0;
-    float scale = 0.5f;  // burn mode: internal resolution relative to the window
     int resets = 0;
-    uint64_t hudSeen = 0;
-    bool completed = false;
 
     while (!stopRequested_) {
         MSG msg{};
@@ -857,29 +774,23 @@ void GpuTest::run(Options options) {
             break;
         }
 
-        if (toggleFullscreen_.exchange(false)) {
-            fullscreen = !fullscreen;
-            fullscreen_ = fullscreen;
-            if (fullscreen) {
-                GetWindowRect(hwnd, &windowed);
-                const RECT rect = monitorRectFor(hwnd);
-                SetWindowLongPtrW(hwnd, GWL_STYLE, kFullscreenStyle | WS_VISIBLE);
-                SetWindowPos(hwnd, HWND_TOP, rect.left, rect.top, rect.right - rect.left,
-                             rect.bottom - rect.top, SWP_FRAMECHANGED);
-            } else {
-                SetWindowLongPtrW(hwnd, GWL_STYLE, kWindowedStyle | WS_VISIBLE);
-                SetWindowPos(hwnd, HWND_TOP, windowed.left, windowed.top, windowed.right - windowed.left,
-                             windowed.bottom - windowed.top, SWP_FRAMECHANGED);
-            }
-            resizePending_ = true;
-        }
-
         if (IsIconic(hwnd)) {
+            // Minimised: nothing is drawn, the clock keeps its nominal pace.
             Sleep(50);
+            TestClock::instance().frame(0.05);
+            lastFrame = nowSeconds();
             continue;
         }
 
         if (resizePending_.exchange(false)) {
+            // Keep covering the whole monitor, whatever its mode is now.
+            const RECT rect = monitorRectFor(hwnd);
+            RECT window{};
+            GetWindowRect(hwnd, &window);
+            if (!EqualRect(&rect, &window)) {
+                SetWindowPos(hwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             GetClientRect(hwnd, &client);
             if (client.right > 0 && client.bottom > 0 &&
                 (client.right != renderer.width || client.bottom != renderer.height)) {
@@ -890,26 +801,10 @@ void GpuTest::run(Options options) {
             }
         }
 
-        // New HUD bitmap from the bench window?
-        {
-            std::lock_guard lock(hudMutex_);
-            if (hudVersion_ != hudSeen) {
-                hudSeen = hudVersion_;
-                renderer.uploadHud(hudWidth_, hudHeight_, hudPixels_);
-            }
-        }
-
         const double now = nowSeconds();
         const float time = static_cast<float>(std::fmod(now - started, 7200.0));
-        int renderW = kBenchWidth;
-        int renderH = kBenchHeight;
-        if (!benchmark) {
-            renderW = std::max(96, static_cast<int>(std::lround(renderer.width * scale)));
-            renderH = std::max(54, static_cast<int>(std::lround(renderer.height * scale)));
-        }
-        renderer.renderScene(time, benchmark ? kBenchQuality : kBurnQuality, renderW, renderH);
-        const int hudMargin = std::max(8, renderer.height / 45);
-        renderer.composite(hudVisible_, hudMargin, hudMargin);
+        renderer.renderScene(time, kSceneQuality, stripsFor(frameMs), frameMs > 80.0);
+        renderer.composite();
         const HRESULT hr = renderer.swap->Present(0, 0);
 
         if (isDeviceLost(hr)) {
@@ -931,21 +826,24 @@ void GpuTest::run(Options options) {
             if (!renderer.init(hwnd, std::max<int>(1, client.right), std::max<int>(1, client.bottom), &error)) {
                 break;
             }
-            hudSeen = 0;
+            lastFrame = nowSeconds();
             continue;
         }
 
         ++frames;
         ++windowFrames;
-        ++adaptFrames;
         const double after = nowSeconds();
+        const double frameSeconds = after - lastFrame;
+        lastFrame = after;
+        TestClock::instance().frame(frameSeconds);
+        frameMs = frameMs * 0.8 + frameSeconds * 1000.0 * 0.2;
 
         if (after - windowStart >= 0.5) {
             const double fps = windowFrames / (after - windowStart);
             windowStart = after;
             windowFrames = 0;
             history_.push(static_cast<float>(fps));
-            // Skip the first seconds (shader warm-up, resolution still adapting).
+            // Skip the first seconds (shader warm-up).
             if (after - started > 3.0) {
                 minFps = minFps <= 0.0 ? fps : std::min(minFps, fps);
                 maxFps = std::max(maxFps, fps);
@@ -960,52 +858,35 @@ void GpuTest::run(Options options) {
             stats_.elapsed = after - started;
             stats_.width = renderer.width;
             stats_.height = renderer.height;
-            stats_.renderWidth = renderW;
-            stats_.renderHeight = renderH;
-            stats_.fullscreen = fullscreen;
-        }
-
-        // Burn mode: keep the frame time comfortable by trading resolution.
-        if (!benchmark && after - adaptStart >= 1.0) {
-            const double fps = adaptFrames / (after - adaptStart);
-            adaptStart = after;
-            adaptFrames = 0;
-            // Resolution is preferred over frame rate: settle at the sharpest
-            // image that still gives roughly 20-40 FPS.
-            if (fps < 20.0) {
-                scale = std::max(0.2f, scale * 0.85f);
-            } else if (fps > 40.0) {
-                scale = std::min(1.0f, scale * 1.12f);
-            }
-        }
-
-        if (benchmark && after - started >= options.benchmarkSeconds) {
-            completed = true;
-            break;
         }
     }
 
     const double elapsed = nowSeconds() - started;
     const double avg = frames / std::max(0.001, elapsed);
+    int width = 0;
+    int height = 0;
     {
         std::lock_guard lock(mutex_);
         stats_.elapsed = elapsed;
         stats_.frames = frames;
         stats_.avgFps = avg;
         stats_.deviceResets = resets;
-        if (completed) {
-            stats_.score = static_cast<int>(std::lround(avg * 100.0));
+        width = stats_.width;
+        height = stats_.height;
+        if (resets == 0 && frames > 0 && elapsed >= 5.0) {
+            // Pixel throughput, so results at different resolutions compare.
+            stats_.score = static_cast<int>(std::lround(
+                avg * 100.0 * (static_cast<double>(width) * height) / (1920.0 * 1080.0)));
         }
     }
 
     if (resets > 0) {
         finish(State::Failed, L"O controlador gráfico falhou " + std::to_wstring(resets) +
                                   L" vez(es) sob carga (reset do dispositivo).");
-    } else if (benchmark && completed) {
-        finish(State::Passed, L"Benchmark concluído: " + formatNumber(avg, 1) + L" FPS médios a 1280×720.");
-    } else if (!benchmark && frames > 0 && elapsed >= 5.0) {
-        finish(State::Passed, L"Sem falhas do controlador em " + formatDuration(elapsed) + L" (" +
-                                  formatNumber(avg, 1) + L" FPS médios).");
+    } else if (frames > 0 && elapsed >= 5.0) {
+        finish(State::Passed, L"Sem falhas do controlador em " + formatDuration(elapsed) + L" — " +
+                                  formatNumber(avg, 1) + L" FPS médios a " + std::to_wstring(width) + L"×" +
+                                  std::to_wstring(height) + L".");
     } else {
         finish(State::Stopped, L"Interrompido.");
     }
@@ -1013,41 +894,15 @@ void GpuTest::run(Options options) {
 
 #ifdef SU_UI_SNAPSHOT
 bool GpuTest::renderSnapshot(const std::filesystem::path& file, int width, int height, float time,
-                             float quality, std::wstring* error, const std::vector<uint8_t>* hud,
-                             int hudWidth, int hudHeight, float renderScale) {
+                             float quality, std::wstring* error) {
     Renderer renderer;
     if (!renderer.init(nullptr, width, height, error)) {
         return false;
     }
-    ComPtr<ID3D11Texture2D> source;
-    if (hud != nullptr) {
-        // Stand-in for the swap chain's back buffer.
-        D3D11_TEXTURE2D_DESC backDesc{};
-        backDesc.Width = static_cast<UINT>(width);
-        backDesc.Height = static_cast<UINT>(height);
-        backDesc.MipLevels = 1;
-        backDesc.ArraySize = 1;
-        backDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        backDesc.SampleDesc.Count = 1;
-        backDesc.Usage = D3D11_USAGE_DEFAULT;
-        backDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-        HRESULT created = renderer.device->CreateTexture2D(&backDesc, nullptr, source.put());
-        if (FAILED(created) || !source ||
-            FAILED(renderer.device->CreateRenderTargetView(source.get(), nullptr, renderer.backRtv.put()))) {
-            return renderer.fail(error, L"Back buffer de teste", created);
-        }
-        renderer.renderScene(time, quality, static_cast<int>(width * renderScale),
-                             static_cast<int>(height * renderScale));
-        renderer.uploadHud(hudWidth, hudHeight, *hud);
-        const int margin = std::max(8, height / 45);
-        renderer.composite(true, margin, margin);
-    } else {
-        renderer.renderScene(time, quality, width, height);
-    }
-    ID3D11Texture2D* readFrom = hud != nullptr ? source.get() : renderer.sceneTex.get();
+    renderer.renderScene(time, quality, kMinStrips, true);
 
     D3D11_TEXTURE2D_DESC desc{};
-    readFrom->GetDesc(&desc);
+    renderer.sceneTex->GetDesc(&desc);
     desc.Usage = D3D11_USAGE_STAGING;
     desc.BindFlags = 0;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -1056,7 +911,7 @@ bool GpuTest::renderSnapshot(const std::filesystem::path& file, int width, int h
     if (FAILED(hr) || !staging) {
         return renderer.fail(error, L"Staging texture", hr);
     }
-    renderer.ctx->CopyResource(staging.get(), readFrom);
+    renderer.ctx->CopyResource(staging.get(), renderer.sceneTex.get());
     D3D11_MAPPED_SUBRESOURCE mapped{};
     hr = renderer.ctx->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) {

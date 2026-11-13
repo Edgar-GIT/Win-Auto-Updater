@@ -17,6 +17,7 @@
 #include <wininet.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <exception>
 #include <filesystem>
@@ -137,6 +138,93 @@ bool launchDetached(const std::filesystem::path& exe, const std::wstring& args,
     return true;
 }
 
+// Sets "Key=value" in an ini-style text file: rewrites the line when the key is
+// already there (outside any [section]), appends it otherwise. Everything else
+// in the file is left byte for byte as it was.
+bool writeIniValue(const std::filesystem::path& file, const std::string& key, const std::string& value) {
+    std::string content;
+    {
+        std::ifstream in(file, std::ios::binary);
+        if (in.is_open()) {
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+    }
+    // A UTF-16 file (Notepad's "Unicode") is not something this can edit safely.
+    if (content.size() >= 2 && ((static_cast<unsigned char>(content[0]) == 0xFF &&
+                                 static_cast<unsigned char>(content[1]) == 0xFE) ||
+                                (static_cast<unsigned char>(content[0]) == 0xFE &&
+                                 static_cast<unsigned char>(content[1]) == 0xFF))) {
+        return false;
+    }
+    const std::string eol = content.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+    const auto lowered = [](std::string text) {
+        for (char& c : text) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return text;
+    };
+    const std::string wanted = lowered(key);
+
+    std::string out;
+    bool replaced = false;
+    bool inSection = false;
+    size_t pos = 0;
+    while (pos < content.size()) {
+        size_t end = content.find('\n', pos);
+        const bool last = end == std::string::npos;
+        if (last) {
+            end = content.size();
+        }
+        std::string line = content.substr(pos, end - pos);
+        const bool hadCr = !line.empty() && line.back() == '\r';
+        if (hadCr) {
+            line.pop_back();
+        }
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos && line[first] == '[') {
+            inSection = true;
+        }
+        const size_t eq = line.find('=');
+        if (!replaced && !inSection && first != std::string::npos && eq != std::string::npos &&
+            line[first] != ';' && line[first] != '#') {
+            std::string name = line.substr(first, eq - first);
+            while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) {
+                name.pop_back();
+            }
+            if (lowered(name) == wanted) {
+                line = key + "=" + value;
+                replaced = true;
+            }
+        }
+        out += line;
+        if (!last) {
+            out += hadCr ? "\r\n" : "\n";
+        }
+        pos = last ? content.size() : end + 1;
+    }
+    if (!replaced) {
+        // Top-level keys must stay above the first [section].
+        const std::string entry = key + "=" + value + eol;
+        const size_t section = out.find("\n[");
+        if (out.rfind('[', 0) == 0) {
+            out.insert(0, entry);
+        } else if (section != std::string::npos) {
+            out.insert(section + 1, entry);
+        } else {
+            if (!out.empty() && out.back() != '\n') {
+                out += eol;
+            }
+            out += entry;
+        }
+    }
+    std::ofstream output(file, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+        return false;
+    }
+    output.write(out.data(), static_cast<std::streamsize>(out.size()));
+    return output.good();
+}
+
 const wchar_t* kGuideText =
     L"ATUALIZAÇÕES\r\n"
     L"  • Atualizar tudo — Windows + drivers + antivírus (respeita o filtro)\r\n"
@@ -144,7 +232,7 @@ const wchar_t* kGuideText =
     L"  • Só drivers — copia AMD/NVIDIA (sem Windows Update)\r\n"
     L"  • Lenovo/ThinkPad — copia também o System Update para o Ambiente de Trabalho\r\n"
     L"  • Filtro de updates — verde = instalar, vermelho = bloquear\r\n"
-    L"  • Interruptor — testes automáticos após atualizar\r\n"
+    L"  • Interruptores — testar após atualizar; e com que testes (nativos ou ferramentas + macro)\r\n"
     L"  • Se a atualização falhar, a ferramenta fecha e reabre sozinha uma vez\r\n"
     L"\r\n"
     L"BANCADA DE TESTES / MACRO\r\n"
@@ -152,7 +240,8 @@ const wchar_t* kGuideText =
     L"  Ferramentas: helpers\\programas de teste\r\n"
     L"  1. Gravar macro → Abrir ferramentas → clicar → F10\r\n"
     L"  2. Testes automáticos — stress + replay da macro\r\n"
-    L"  • Testes nativos (beta) — RAM, CPU, disco e gráfica sem ferramentas externas\r\n"
+    L"  • Nativos auto (beta) — RAM, CPU, disco, gráfica e bateria sozinhos, 5 min\r\n"
+    L"  • Nativos manual (beta) — uma janela por teste, para clicar à mão\r\n"
     L"  • Sensores — OpenHardwareMonitor (+ BatteryCare)\r\n"
     L"\r\n"
     L"Filtro: helpers\\update_filter.txt (passa entre PCs com a pasta helpers).\r\n"
@@ -343,8 +432,12 @@ int App::run() {
 
     // Ensure Desktop\helpers\ + stress.ini / uia_stress.ps1 exist.
     Stress::ensureAssets(currentExecutable());
-    // Default the chooser's "auto stress" toggle to the AutoRunStress setting.
-    autoStressAfterUpdate_ = Stress::loadConfig(currentExecutable()).autoRunStress;
+    // Default the chooser's toggles to the AutoRunStress / NativeTests settings.
+    {
+        const Stress::Config stressConfig = Stress::loadConfig(currentExecutable());
+        autoStressAfterUpdate_ = stressConfig.autoRunStress;
+        nativeAfterUpdate_ = stressConfig.nativeTests;
+    }
     if (autoStressOverride_ >= 0) {
         autoStressAfterUpdate_ = autoStressOverride_ != 0;
     }
@@ -540,9 +633,14 @@ void App::initWidgets() {
     add(IDC_OPEN_TOOLS, L"Abrir ferramentas", L"Sem macro", ButtonStyle::Glass, Icon::Grid);
     add(IDC_MONITOR, L"Sensores", L"Temperaturas", ButtonStyle::Glass, Icon::Pulse);
     add(IDC_RECORD_MACRO, L"Gravar macro", L"MacroHelper · F10", ButtonStyle::Glass, Icon::Record);
-    // Native bench (beta): our own RAM / CPU / disk / GPU tests, in their own window.
-    add(IDC_NATIVE_TESTS, L"Testes nativos", L"Beta · bancada própria", ButtonStyle::Glass,
+    // Native tests (beta): our own RAM / CPU / disk / GPU / battery tests, in their
+    // own process. Automatic = everything by itself; manual = one window per test.
+    add(IDC_NATIVE_TESTS, L"Nativos auto", L"Beta · tudo sozinho, 5 min", ButtonStyle::Glass,
         Icon::Chip);
+    add(IDC_NATIVE_MANUAL, L"Nativos manual", L"Beta · uma janela por teste", ButtonStyle::Glass,
+        Icon::Grid);
+    add(IDC_NATIVE_TOGGLE, L"Usar os testes nativos após atualizar", L"", ButtonStyle::Glass,
+        Icon::None, true);
     add(IDC_REOPEN_TOGGLE, L"Reabrir após reinício", L"", ButtonStyle::Glass, Icon::None, true);
     add(IDC_RETRY, L"Tentar novamente", L"", ButtonStyle::Primary, Icon::Retry);
     add(IDC_GUIDE, L"Guia", L"", ButtonStyle::Ghost, Icon::Info);
@@ -767,7 +865,7 @@ static float verticalStretch(int available, int natural) {
 
 void App::layoutHome(int top, int bottom) {
     const int margin = px(26.0f);
-    const float v = verticalStretch(bottom - top, px(322.0f + 14.0f + 46.0f));
+    const float v = verticalStretch(bottom - top, px(384.0f + 14.0f + 46.0f));
     const auto vpx = [&](float du) { return static_cast<int>(std::lround(du * scale_ * v)); };
 
     const int headerH = px(46.0f);  // card caption strip (not stretched)
@@ -776,7 +874,7 @@ void App::layoutHome(int top, int bottom) {
     const int bigH = vpx(64.0f);
     const int midH = vpx(56.0f);
     const int smallH = vpx(50.0f);
-    const int cardH = headerH + bigH + midH + smallH * 2 + rowGap * 3 + pad;
+    const int cardH = headerH + bigH + midH + smallH * 3 + rowGap * 4 + pad;
     const int hintGap = vpx(14.0f);
     const int hintH = vpx(46.0f);
     const int blockH = cardH + hintGap + hintH;
@@ -801,6 +899,8 @@ void App::layoutHome(int top, int bottom) {
         place(IDC_CONFIGURE_UPDATES, x, y, w, smallH);
         y += smallH + rowGap;
         place(IDC_STRESS_TOGGLE, x, y, w, smallH);
+        y += smallH + rowGap;
+        place(IDC_NATIVE_TOGGLE, x, y, w, smallH);
     }
     {
         const int x = cardRight_.left + pad;
@@ -812,8 +912,10 @@ void App::layoutHome(int top, int bottom) {
         place(IDC_OPEN_TOOLS, x, y, half, midH);
         place(IDC_MONITOR, x + half + colGap, y, w - half - colGap, midH);
         y += midH + rowGap;
-        place(IDC_RECORD_MACRO, x, y, half, smallH);
-        place(IDC_NATIVE_TESTS, x + half + colGap, y, w - half - colGap, smallH);
+        place(IDC_NATIVE_TESTS, x, y, half, smallH);
+        place(IDC_NATIVE_MANUAL, x + half + colGap, y, w - half - colGap, smallH);
+        y += smallH + rowGap;
+        place(IDC_RECORD_MACRO, x, y, w, smallH);
         y += smallH + rowGap;
         chipsRect_ = RECT{x, y, x + w, y + smallH};
     }
@@ -872,11 +974,17 @@ void App::layoutDone(int top, int bottom) {
     const int actionsY = bottom - actionsH;
     const int fullW = clientW_ - margin * 2;
     if (doneSuccess_) {
-        const int w = (fullW - gap * 3) / 4;
-        place(IDC_OPEN_TOOLS, margin, actionsY, w, actionsH);
-        place(IDC_RUN_TESTS, margin + w + gap, actionsY, w, actionsH);
-        place(IDC_NATIVE_TESTS, margin + (w + gap) * 2, actionsY, w, actionsH);
-        place(IDC_MONITOR, margin + (w + gap) * 3, actionsY, fullW - (w + gap) * 3, actionsH);
+        // Five actions; the widths follow the length of the labels.
+        const int ids[5] = {IDC_OPEN_TOOLS, IDC_RUN_TESTS, IDC_NATIVE_TESTS, IDC_NATIVE_MANUAL, IDC_MONITOR};
+        const float weights[5] = {1.12f, 1.17f, 0.92f, 0.98f, 0.81f};
+        const int smallGap = px(10.0f);
+        const float unit = static_cast<float>(fullW - smallGap * 4) / 5.0f;
+        int x = margin;
+        for (int i = 0; i < 5; ++i) {
+            const int w = i == 4 ? margin + fullW - x : static_cast<int>(std::lround(unit * weights[i]));
+            place(ids[i], x, actionsY, w, actionsH);
+            x += w + smallGap;
+        }
         const Widget* close = widget(IDC_CLOSE);
         if (close != nullptr) {
             place(IDC_REOPEN_TOGGLE, margin, close->rc.top, px(290.0f),
@@ -1124,7 +1232,11 @@ void App::showFinishedScreen(bool success, const std::wstring& detail) {
     // "After update: run stress tests" — kick off the bench once the update ends.
     if (success && autoStressAfterUpdate_ && !autoStressStarted_) {
         autoStressStarted_ = true;
-        runStressTests();
+        if (nativeAfterUpdate_) {
+            launchNativeTests(true);
+        } else {
+            runStressTests();
+        }
     }
 }
 
@@ -1594,18 +1706,28 @@ void App::launchMonitorTools() {
     applyHint(summary);
 }
 
-// "Testes nativos" (beta): the bench lives in native_tests/ and runs as a second
-// process of this same executable, so nothing it does (a GPU driver reset, most
-// of the RAM under test) can disturb the updater or the macro workflow.
-void App::launchNativeTests() {
+// Native tests (beta): they live in native_tests/ and run as a second process of
+// this same executable, so nothing they do (a GPU driver reset, most of the RAM
+// under test) can disturb the updater or the macro workflow.
+//   automatic — every test at once, by itself, five minutes on the graphics clock
+//   manual    — one window per test, started by hand
+void App::launchNativeTests(bool automatic) {
     std::wstring error;
-    if (!launchDetached(currentExecutable(), L"--native-tests", &error)) {
+    if (!launchDetached(currentExecutable(), automatic ? L"--native-tests --auto" : L"--native-tests --manual",
+                        &error)) {
         MessageBoxW(hwnd_, (L"Não foi possível abrir os testes nativos.\r\n\r\n" + error).c_str(),
                     kAppTitle, MB_OK | MB_ICONWARNING);
         return;
     }
-    appendLog(L"Testes nativos (beta) abertos numa janela à parte.");
-    applyHint(L"Testes nativos (beta) abertos numa janela à parte — RAM, CPU, disco e gráfica.");
+    if (automatic) {
+        appendLog(L"Testes nativos automáticos (beta) iniciados.");
+        applyHint(L"Testes nativos automáticos a correr — RAM, CPU, disco, gráfica e bateria; o veredicto "
+                  L"aparece no fim.");
+    } else {
+        appendLog(L"Testes nativos manuais (beta) abertos.");
+        applyHint(L"Testes nativos manuais abertos — uma janela por teste, com a barra de monitorização à "
+                  L"esquerda.");
+    }
 }
 
 void App::toggleRecording() {
@@ -2537,11 +2659,16 @@ void App::drawWidgets(Canvas& canvas, const RECT& clip) {
         state.pressed = pressedId_ == w.id && hoverId_ == w.id;
         const RectF r = ui::toRectF(w.rc);
         if (w.toggle) {
-            const bool on = w.id == IDC_STRESS_TOGGLE ? autoStressAfterUpdate_ : reopenAfterRestart_;
+            bool on = reopenAfterRestart_;
             std::wstring sub;
             if (w.id == IDC_STRESS_TOGGLE) {
+                on = autoStressAfterUpdate_;
                 sub = on ? L"Ligado — a bancada corre no fim da atualização"
                          : L"Desligado — só atualiza";
+            } else if (w.id == IDC_NATIVE_TOGGLE) {
+                on = nativeAfterUpdate_;
+                sub = on ? L"Ligado — os nossos testes automáticos (5 min)"
+                         : L"Desligado — ferramentas + macro (predefinido)";
             }
             canvas.toggleRow(r, w.text, sub, on, state);
         } else {
@@ -2648,6 +2775,18 @@ void App::onCommand(int id) {
                 invalidateWidget(IDC_STRESS_TOGGLE);
             }
             break;
+        case IDC_NATIVE_TOGGLE:
+            if (choosing_) {
+                nativeAfterUpdate_ = !nativeAfterUpdate_;
+                invalidateWidget(IDC_NATIVE_TOGGLE);
+                // Remembered in stress.ini: the update restarts the PC (and this
+                // tool) several times before the tests run.
+                if (!writeIniValue(Stress::configPath(currentExecutable()), "NativeTests",
+                                   nativeAfterUpdate_ ? "1" : "0")) {
+                    appendLog(L"Não foi possível gravar NativeTests em helpers\\stress.ini.");
+                }
+            }
+            break;
         case IDC_REOPEN_TOGGLE:
             if (uiDoneMode_) {
                 reopenAfterRestart_ = !reopenAfterRestart_;
@@ -2683,7 +2822,10 @@ void App::onCommand(int id) {
             launchMonitorTools();
             break;
         case IDC_NATIVE_TESTS:
-            launchNativeTests();
+            launchNativeTests(true);
+            break;
+        case IDC_NATIVE_MANUAL:
+            launchNativeTests(false);
             break;
         case IDC_OPEN_TOOLS:
             openTestTools();
@@ -3073,7 +3215,7 @@ int App::runSnapshot(const std::filesystem::path& directory) {
         ReleaseDC(nullptr, screenDc);
     };
 
-    const int sizes[][2] = {{940, 580}, {780, 500}, {1340, 700}, {1264, 950}};
+    const int sizes[][2] = {{940, 632}, {780, 524}, {1340, 760}, {1264, 950}};
     const auto all = [&](const std::wstring& name) {
         for (const auto& size : sizes) {
             shot(name, size[0], size[1]);
@@ -3081,6 +3223,7 @@ int App::runSnapshot(const std::filesystem::path& directory) {
     };
 
     // Home
+    nativeAfterUpdate_ = true;
     lastCurrent_ = kHomeHint;
     toolsPresent_ = true;
     helperPresent_ = true;
@@ -3117,7 +3260,7 @@ int App::runSnapshot(const std::filesystem::path& directory) {
     lastPhase_ = L"A procurar atualizações";
     lastCurrent_ = L"A procurar atualizações no Windows Update...";
     animFrame_ = 13;
-    shot(L"3_searching", 940, 580);
+    shot(L"3_searching", 940, 632);
 
     // Done — success with stress log
     uiDoneMode_ = true;
@@ -3145,8 +3288,8 @@ int App::runSnapshot(const std::filesystem::path& directory) {
                    L"Install failed: Failed (0x80070643 — Fatal error during installation).\r\n\r\n"
                    L"A ferramenta já foi reaberta automaticamente uma vez e o erro repetiu-se.";
     uiStats_.failed = 1;
-    shot(L"5_error", 940, 580);
-    shot(L"5_error", 780, 500);
+    shot(L"5_error", 940, 632);
+    shot(L"5_error", 780, 524);
 
     releaseSurfaces();
     ui::shutdown();

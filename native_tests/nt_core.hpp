@@ -69,6 +69,46 @@ private:
 // Monotonic seconds.
 double nowSeconds();
 
+// ---------------------------------------------------------------------------
+// Test clock
+// ---------------------------------------------------------------------------
+// Every test lasts five minutes *on the graphics test's clock*, the way the
+// third-party burn-in tools behave: while the GPU test is rendering, the clock
+// only advances a fixed slice per frame, so on a PC that is crawling under the
+// load the five minutes stretch (to ten, fifteen...), and on a fast PC they are
+// five real minutes. Without the GPU test the clock is simply real time.
+
+// Below this frame rate the test clock runs slower than real time: at 5 FPS the
+// five minutes take ten, at 3.3 FPS or less they reach the fifteen-minute ceiling.
+constexpr double kNominalFps = 10.0;
+
+// Length of a test on the test clock, and the real-time ceiling (3×) that ends
+// it anyway on a machine that is extremely slow.
+double testSeconds();
+double maxRealSeconds();
+// Developer / command-line override of the five minutes (seconds; 0 = default).
+void setTestSeconds(double seconds);
+
+class TestClock {
+public:
+    static TestClock& instance();
+
+    // Seconds on the test clock since the process started.
+    double now();
+    // GPU test thread: the scene is being rendered / stopped being rendered.
+    void setGpuPaced(bool paced);
+    // GPU test thread, once per presented frame, with the real time it took.
+    void frame(double seconds);
+    bool gpuPaced();
+
+private:
+    TestClock() = default;
+    std::mutex mutex_;
+    double accumulated_ = 0.0;
+    double lastReal_ = -1.0;
+    bool gpuPaced_ = false;
+};
+
 // "5,2 GB", "640 MB".
 std::wstring formatBytes(uint64_t bytes);
 // "12:34" or "1:02:03".

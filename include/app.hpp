@@ -73,7 +73,7 @@ private:
 
     // Layout is authored for this client size (96-DPI pixels) and scaled.
     static constexpr int kDesignW = 940;
-    static constexpr int kDesignH = 580;
+    static constexpr int kDesignH = 632;
     static constexpr UINT_PTR kRebootTimerId = 1;
     static constexpr UINT_PTR kAnimTimerId = 2;
     static constexpr UINT_PTR kRetryTimerId = 3;
@@ -166,6 +166,10 @@ private:
     // Chooser decision: run the stress bench automatically once the update ends.
     bool autoStressAfterUpdate_ = true;
     bool autoStressStarted_ = false;
+    // Chooser decision: the bench that runs after the update is the app's own
+    // native tests instead of the tools + macro. Kept in helpers\stress.ini
+    // (NativeTests=) so it survives the restarts of an update.
+    bool nativeAfterUpdate_ = false;
     // Done-screen decision: keep the logon task so the tool reopens after every
     // restart until it is uninstalled.
     bool reopenAfterRestart_ = true;
@@ -214,7 +218,7 @@ private:
     void runStressTests();
     void openTestTools();
     void launchMonitorTools();
-    void launchNativeTests();
+    void launchNativeTests(bool automatic);
     void toggleRecording();
     void finishRecording();
     void applyHint(const std::wstring& hint);

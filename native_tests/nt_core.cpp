@@ -1,5 +1,6 @@
 #include "nt_core.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +13,65 @@ double nowSeconds() {
     using clock = std::chrono::steady_clock;
     static const clock::time_point origin = clock::now();
     return std::chrono::duration<double>(clock::now() - origin).count();
+}
+
+namespace {
+std::atomic<double> g_testSeconds{300.0};
+}  // namespace
+
+double testSeconds() {
+    return g_testSeconds.load();
+}
+
+double maxRealSeconds() {
+    return g_testSeconds.load() * 3.0;
+}
+
+void setTestSeconds(double seconds) {
+    g_testSeconds = seconds > 0.0 ? seconds : 300.0;
+}
+
+TestClock& TestClock::instance() {
+    static TestClock clock;
+    return clock;
+}
+
+double TestClock::now() {
+    std::lock_guard lock(mutex_);
+    const double real = nowSeconds();
+    if (lastReal_ < 0.0) {
+        lastReal_ = real;
+    }
+    if (!gpuPaced_) {
+        accumulated_ += real - lastReal_;
+    }
+    lastReal_ = real;
+    return accumulated_;
+}
+
+void TestClock::setGpuPaced(bool paced) {
+    std::lock_guard lock(mutex_);
+    const double real = nowSeconds();
+    if (lastReal_ < 0.0) {
+        lastReal_ = real;
+    }
+    if (!gpuPaced_) {
+        accumulated_ += real - lastReal_;
+    }
+    lastReal_ = real;
+    gpuPaced_ = paced;
+}
+
+void TestClock::frame(double seconds) {
+    std::lock_guard lock(mutex_);
+    if (gpuPaced_ && seconds > 0.0) {
+        accumulated_ += std::min(seconds, 1.0 / kNominalFps);
+    }
+}
+
+bool TestClock::gpuPaced() {
+    std::lock_guard lock(mutex_);
+    return gpuPaced_;
 }
 
 std::wstring formatNumber(double value, int decimals) {

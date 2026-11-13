@@ -153,11 +153,21 @@ Set `MacroEngine=cpp` for the legacy in-process recorder (`macro.txt`).
 
 ## Native tests (beta)
 
-The **Testes nativos** button opens the app's own test bench — RAM test, CPU burner,
-disk benchmark with data verification and a Direct3D 11 GPU burner/benchmark — with no
-external tools and no macro. It is the same executable started as a second process
-(`SingleUpdate.exe --native-tests`), and all of its code lives in
-[`native_tests/`](native_tests/README.md), so it cannot interfere with the updater or
+The app's own tests — RAM, CPU burner, disk benchmark with data verification, a
+Direct3D 11 GPU burner and a battery read-out — with no external tools and no macro:
+
+- **Nativos auto** runs everything at once by itself and ends with a verdict.
+- **Nativos manual** opens one small window per test, started by hand.
+- A monitor bar stays on top on the left edge of the screen (temperatures, loads, FPS,
+  test clock, errors), also over the full-screen GPU test.
+- The toggle **Usar os testes nativos após atualizar** (saved as `NativeTests=` in
+  `helpers\stress.ini`) chooses which bench runs after an update: the native tests or
+  the default tools + macro.
+
+Every test lasts five minutes on the GPU test's clock, so a PC that crawls under the
+load takes longer (up to 15 minutes). It is the same executable started as a second
+process (`SingleUpdate.exe --native-tests --auto | --manual`), and all of its code lives
+in [`native_tests/`](native_tests/README.md), so it cannot interfere with the updater or
 with the macro-driven bench above.
 
 ---

@@ -1,9 +1,13 @@
 #pragma once
 
-// Entry points of the native test bench. The bench is a separate process of the
-// same executable: "SingleUpdate.exe --native-tests [--autostart=<minutes>]".
-// Keeping it out of the updater's process means a GPU driver reset or a memory
-// test holding most of the RAM can never disturb an update in progress.
+// Entry points of the native tests. They are a separate process of the same
+// executable:
+//
+//   SingleUpdate.exe --native-tests --auto     every test at once, by itself
+//   SingleUpdate.exe --native-tests --manual   one window per test, by hand
+//
+// Keeping them out of the updater's process means a GPU driver reset or a
+// memory test holding most of the RAM can never disturb an update in progress.
 
 #ifndef UNICODE
 #define UNICODE
@@ -19,14 +23,16 @@
 namespace nt {
 
 struct LaunchOptions {
-    // > 0: start every test automatically for this many minutes; 0 = wait for the user.
-    int autostartMinutes = 0;
-    // Test aid ("--autostart-seconds=N" together with --autostart): overrides the
-    // session length with a number of seconds.
-    double autostartSecondsOverride = 0.0;
+    // true: automatic session (dashboard); false: the separate test windows.
+    bool automatic = false;
+    // "--keep-resolution": leave the display mode alone (by default the
+    // graphics test switches the screen to its highest resolution).
+    bool keepDisplayMode = false;
+    // "--test-seconds=N": length of a test on the test clock (0 = five minutes).
+    double testSeconds = 0.0;
 };
 
-// Runs the bench window until it is closed. Returns the process exit code.
+// Runs the native tests until their windows are closed. Returns the exit code.
 int runNativeTests(HINSTANCE instance, const LaunchOptions& options);
 
 #ifdef SU_UI_SNAPSHOT

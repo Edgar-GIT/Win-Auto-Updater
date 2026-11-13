@@ -88,28 +88,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
 #endif
 
-    // "--native-tests [--autostart=<minutes>]": the native test bench (beta). It is
-    // its own window in its own process, independent from the updater instance.
+    // "--native-tests --auto | --manual": the native tests (beta). They are their
+    // own windows in their own process, independent from the updater instance.
     if (argv != nullptr) {
         bool nativeTests = false;
         nt::LaunchOptions nativeOptions;
-        const std::wstring autostart = L"--autostart=";
-        const std::wstring autostartSeconds = L"--autostart-seconds=";
+        const std::wstring testSeconds = L"--test-seconds=";
         for (int i = 1; i < argc; ++i) {
             const std::wstring arg = argv[i];
             if (arg == L"--native-tests") {
                 nativeTests = true;
-            } else if (arg.rfind(autostartSeconds, 0) == 0) {
+            } else if (arg == L"--auto") {
+                nativeOptions.automatic = true;
+            } else if (arg == L"--manual") {
+                nativeOptions.automatic = false;
+            } else if (arg == L"--keep-resolution") {
+                nativeOptions.keepDisplayMode = true;
+            } else if (arg.rfind(testSeconds, 0) == 0) {
                 try {
-                    nativeOptions.autostartSecondsOverride = std::stod(arg.substr(autostartSeconds.size()));
+                    nativeOptions.testSeconds = std::stod(arg.substr(testSeconds.size()));
                 } catch (...) {
-                    nativeOptions.autostartSecondsOverride = 0.0;
-                }
-            } else if (arg.rfind(autostart, 0) == 0) {
-                try {
-                    nativeOptions.autostartMinutes = std::stoi(arg.substr(autostart.size()));
-                } catch (...) {
-                    nativeOptions.autostartMinutes = 0;
+                    nativeOptions.testSeconds = 0.0;
                 }
             }
         }

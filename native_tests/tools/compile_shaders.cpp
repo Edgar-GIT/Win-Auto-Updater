@@ -85,7 +85,6 @@ int main(int argc, char** argv) {
         {"VSMain", "vs_4_0", "kVertex"},
         {"PSScene", "ps_4_0", "kScene"},
         {"PSBlit", "ps_4_0", "kBlit"},
-        {"PSHud", "ps_4_0", "kHud"},
     };
 
     std::string text =

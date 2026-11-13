@@ -49,6 +49,9 @@ struct Config {
     // Starts the bench automatically right after a successful update.
     // Deploy: Desktop\SingleUpdate.exe + Desktop\helpers\ (tools, macro, …).
     bool autoRunStress = true;
+    // Which bench that is: false = the third-party tools driven by the macro
+    // (default), true = the app's own native tests (automatic session).
+    bool nativeTests = false;
     std::wstring powerMaxExe = L"powerMAX\\powerMAX.exe";
     int powerMaxInstances = 1;
     std::wstring memTestExe = L"memtest.exe";

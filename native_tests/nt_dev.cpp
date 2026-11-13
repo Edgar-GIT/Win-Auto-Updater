@@ -11,6 +11,7 @@
 #include "disk_test.hpp"
 #include "gpu_test.hpp"
 #include "ram_test.hpp"
+#include "sensors.hpp"
 
 #include "ui.hpp"
 
@@ -131,6 +132,48 @@ int runNativeSelfTest(const std::filesystem::path& reportFile) {
         }
     }
 
+    // ---- Sensors + battery ----------------------------------------------------
+    {
+        Sensors sensors;
+        sensors.start();
+        Sleep(3500);
+        const SensorSnapshot s = sensors.snapshot();
+        sensors.stop();
+        out << "Sensors: cpuLoad=" << s.cpuLoadPct << "% cpuMhz=" << s.cpuMhz << "/" << s.cpuBaseMhz
+            << " cpuTemp=" << s.cpuTempC << " gpu=" << narrow(s.gpuName) << " gpuTemp=" << s.gpuTempC << " ("
+            << narrow(s.gpuTempSource) << ") gpuLoad=" << s.gpuLoadPct << " fan=" << s.gpuFanRpm << " vram="
+            << s.vramUsed << "/" << s.vramTotal << " ram=" << s.ramUsed << "/" << s.ramTotal << " diskTemp="
+            << s.diskTempC << "\n";
+        const BatteryInfo b = readBattery();
+        out << "Battery: present=" << b.present << " count=" << b.count << " percent=" << b.percent << " onAc="
+            << b.onAc << " health=" << b.healthPct << " grade=" << narrow(batteryGradeText(gradeBattery(b)))
+            << " status=" << narrow(batteryStatusText(b)) << "\n";
+    }
+
+    // ---- Test clock ---------------------------------------------------------------
+    {
+        TestClock& clock = TestClock::instance();
+        const double a = clock.now();
+        Sleep(500);
+        const double realPart = clock.now() - a;  // real time: ~0.5
+        clock.setGpuPaced(true);
+        const double b = clock.now();
+        Sleep(500);  // no frames: the clock must stand still
+        const double stalled = clock.now() - b;
+        for (int i = 0; i < 30; ++i) {
+            clock.frame(0.2);  // 5 FPS: each frame only counts 1/10 s
+        }
+        const double slow = clock.now() - b;  // 30 / 10 = 3.0 instead of 6.0
+        for (int i = 0; i < 60; ++i) {
+            clock.frame(0.01);  // 100 FPS: real time, 0.6
+        }
+        const double fast = clock.now() - b - slow;
+        clock.setGpuPaced(false);
+        out << "TestClock: real=" << realPart << " stalled=" << stalled << " slow30frames=" << slow
+            << " fast60frames=" << fast << " testSeconds=" << testSeconds() << " max=" << maxRealSeconds()
+            << "\n";
+    }
+
     std::ofstream file(reportFile, std::ios::binary);
     file << out.str();
     return 0;
@@ -142,11 +185,11 @@ int runGpuSnapshot(const std::filesystem::path& directory) {
     std::filesystem::create_directories(directory, ec);
     std::ostringstream out;
 
-    std::wstring name;
-    uint64_t vram = 0;
-    bool software = false;
-    if (GpuTest::queryAdapter(&name, &vram, &software)) {
-        out << "adapter=" << narrow(name) << " vram=" << vram << " software=" << software << "\n";
+    GpuAdapter adapter;
+    if (GpuTest::queryAdapter(&adapter)) {
+        out << "adapter=" << narrow(adapter.name) << " vram=" << adapter.vramBytes << " shared="
+            << adapter.sharedBytes << " software=" << adapter.software << " vendor=" << std::hex
+            << adapter.vendorId << std::dec << "\n";
     } else {
         out << "queryAdapter failed\n";
     }

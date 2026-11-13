@@ -38,17 +38,11 @@ VSOut VSMain(uint id : SV_VertexID)
     return o;
 }
 
-// Upscale of the (possibly lower resolution) scene to the back buffer.
+// Copy of the scene texture to the back buffer.
 float4 PSBlit(VSOut i) : SV_Target
 {
     float2 uv = min(i.uv * uBlit.xy, uBlit.zw);
     return float4(uTex.Sample(uSamp, uv).rgb, 1.0);
-}
-
-// HUD overlay: premultiplied-alpha bitmap drawn by the bench window.
-float4 PSHud(VSOut i) : SV_Target
-{
-    return uTex.Sample(uSamp, i.uv);
 }
 
 // ---------------------------------------------------------------------------
